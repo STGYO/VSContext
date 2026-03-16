@@ -41,7 +41,7 @@
         {
           "id": "vscontextExplorer",
           "title": "VSContext Explorer",
-          "icon": "icon.svg"
+          "icon": "resources/activity-bar.svg"
         }
       ]
     },
@@ -129,7 +129,8 @@
     "CHANGELOG.md",
     "LICENSE",
     "icon.png",
-    "icon.svg"
+    "icon.svg",
+    "resources/activity-bar.svg"
   ],
   "devDependencies": {
     "@types/node": "^20.17.50",
