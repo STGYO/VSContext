@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- Updated execution and impact analysis panels to render visual node-link graphs
+
 ## 0.1.2
 
 - Added a dedicated Activity Bar icon contribution asset for the VSContext view container

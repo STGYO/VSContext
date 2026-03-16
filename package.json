@@ -2,18 +2,18 @@
   "name": "vscontext",
   "displayName": "VSContext",
   "description": "A stable VS Code extension for workspace symbol graphing, execution tracing, and impact analysis.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "ShriSrimoyTrivedy",
   "icon": "icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/srimo/vscontext"
+    "url": "https://github.com/STGYO/VSContext"
   },
   "bugs": {
-    "url": "https://github.com/srimo/vscontext/issues"
+    "url": "https://github.com/STGYO/VSContext/issues"
   },
-  "homepage": "https://github.com/srimo/vscontext",
+  "homepage": "https://github.com/STGYO/VSContext",
   "galleryBanner": {
     "color": "#1E293B",
     "theme": "dark"
