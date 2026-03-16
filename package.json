@@ -1,0 +1,140 @@
+{
+  "name": "vscontext",
+  "displayName": "VSContext",
+  "description": "A stable VS Code extension for workspace symbol graphing, execution tracing, and impact analysis.",
+  "version": "0.1.1",
+  "publisher": "srimo",
+  "icon": "icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/srimo/vscontext"
+  },
+  "bugs": {
+    "url": "https://github.com/srimo/vscontext/issues"
+  },
+  "homepage": "https://github.com/srimo/vscontext",
+  "galleryBanner": {
+    "color": "#1E293B",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "call graph",
+    "execution trace",
+    "impact analysis",
+    "code navigation"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "vscontextExplorer",
+          "title": "VSContext Explorer",
+          "icon": "icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "vscontextExplorer": [
+        {
+          "id": "vscontext.explorer",
+          "name": "VSContext Explorer"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "vscontext.traceExecution",
+        "title": "VSContext: Trace Execution Path",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.findImpact",
+        "title": "VSContext: Find Impact of Change",
+        "category": "VSContext"
+      }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "vscontext.traceExecution",
+          "when": "view == vscontext.explorer && viewItem == vscontext.method",
+          "group": "inline@1"
+        },
+        {
+          "command": "vscontext.findImpact",
+          "when": "view == vscontext.explorer && viewItem == vscontext.method",
+          "group": "inline@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "VSContext",
+      "properties": {
+        "vscontext.maxScannedFiles": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "description": "DEPRECATED: use vscontext.maxIndexedFiles instead."
+        },
+        "vscontext.maxIndexedFiles": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 100,
+          "description": "Maximum number of workspace source files scanned for indexing."
+        },
+        "vscontext.refreshDebounceMs": {
+          "type": "number",
+          "default": 300,
+          "minimum": 100,
+          "description": "Debounce interval for graph refresh after workspace file changes."
+        },
+        "vscontext.workerBatchSize": {
+          "type": "number",
+          "default": 75,
+          "minimum": 50,
+          "maximum": 100,
+          "description": "Batch size used by VSContext worker pre-scan tasks."
+        },
+        "vscontext.workerCount": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Maximum number of worker threads used for VSContext pre-scan processing."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "files": [
+    "out",
+    "package.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "icon.png",
+    "icon.svg"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.17.50",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.9.3",
+    "vscode": "^1.1.37"
+  }
+}
