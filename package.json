@@ -2,8 +2,8 @@
   "name": "vscontext",
   "displayName": "VSContext",
   "description": "A stable VS Code extension for workspace symbol graphing, execution tracing, and impact analysis.",
-  "version": "0.1.1",
-  "publisher": "Shri Srimoy Trivedy",
+  "version": "0.1.2",
+  "publisher": "ShriSrimoyTrivedy",
   "icon": "icon.png",
   "license": "MIT",
   "repository": {

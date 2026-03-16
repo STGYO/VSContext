@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Added a dedicated Activity Bar icon contribution asset for the VSContext view container
+
 ## 0.1.1
 
 - Production hardening pass for marketplace readiness
