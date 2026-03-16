@@ -11,8 +11,8 @@ VSContext is a single, free VS Code extension that builds a workspace symbol gra
 
 ## Commands
 
-- `VSContext: Trace Execution Path`
-- `VSContext: Find Impact of Change`
+- `VSContext: Trace Path`
+- `VSContext: Impact`
 
 ## Installation
 
@@ -30,21 +30,20 @@ For local development build:
 
 ## Sidebar
 
-The `VSContext Explorer` view contains:
+The `VSContext` view contains:
 
 - `Workspace`
-- `Files` and indexed methods
-- `Analysis`
-  - `Trace Execution Path`
-  - `Impact Analysis`
+- `Files` with grouped functions, classes, and variables
+- `Symbols` grouped by type
+- View title toolbar actions: `Trace Path` and `Impact`
 
 ## Usage
 
 1. Open a workspace with TypeScript, JavaScript, Python, Go, or Rust files.
-1. Open `VSContext Explorer` from the Activity Bar.
+1. Open `VSContext` from the Activity Bar.
 1. Expand `Workspace` and browse indexed methods under `Files`.
-1. Select a function and run `VSContext: Trace Execution Path`.
-1. Select a function and run `VSContext: Find Impact of Change`.
+1. Select a function and run `VSContext: Trace Path` from the view title toolbar.
+1. Select a function and run `VSContext: Impact` from the view title toolbar.
 1. Click nodes in either analysis panel to jump to source.
 
 ## Supported Indexing Scope

@@ -40,7 +40,7 @@
       "activitybar": [
         {
           "id": "vscontextExplorer",
-          "title": "VSContext Explorer",
+          "title": "VSContext",
           "icon": "resources/activity-bar.svg"
         }
       ]
@@ -49,33 +49,35 @@
       "vscontextExplorer": [
         {
           "id": "vscontext.explorer",
-          "name": "VSContext Explorer"
+          "name": "VSContext"
         }
       ]
     },
     "commands": [
       {
         "command": "vscontext.traceExecution",
-        "title": "VSContext: Trace Execution Path",
-        "category": "VSContext"
+        "title": "Trace Path",
+        "category": "VSContext",
+        "icon": "$(debug-step-over)"
       },
       {
         "command": "vscontext.findImpact",
-        "title": "VSContext: Find Impact of Change",
-        "category": "VSContext"
+        "title": "Impact",
+        "category": "VSContext",
+        "icon": "$(git-compare)"
       }
     ],
     "menus": {
-      "view/item/context": [
+      "view/title": [
         {
           "command": "vscontext.traceExecution",
-          "when": "view == vscontext.explorer && viewItem == vscontext.method",
-          "group": "inline@1"
+          "when": "view == vscontext.explorer",
+          "group": "navigation@1"
         },
         {
           "command": "vscontext.findImpact",
-          "when": "view == vscontext.explorer && viewItem == vscontext.method",
-          "group": "inline@2"
+          "when": "view == vscontext.explorer",
+          "group": "navigation@2"
         }
       ]
     },
