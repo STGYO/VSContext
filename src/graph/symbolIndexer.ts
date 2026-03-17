@@ -21,6 +21,20 @@ const SUPPORTED_SYMBOL_KINDS = new Set<vscode.SymbolKind>([
   vscode.SymbolKind.Property,
 ]);
 
+const PRE_SCAN_AST_EXTENSIONS = new Set<string>([
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.py',
+  '.rs',
+  '.go',
+  '.java',
+  '.c',
+  '.h',
+  '.cpp',
+]);
+
 type WorkerSymbolKind = 'function' | 'method' | 'class' | 'variable' | 'constant' | 'field' | 'property';
 
 interface WorkerExtractedSymbol {
@@ -326,7 +340,8 @@ export class SymbolIndexer {
     workerCount: number,
     workerBatchSize: number,
   ): Promise<WorkerBatchResult> {
-    const filePaths = files.map((uri) => uri.fsPath);
+    const preScannableUris = files.filter((uri) => PRE_SCAN_AST_EXTENSIONS.has(path.extname(uri.fsPath).toLowerCase()));
+    const filePaths = preScannableUris.map((uri) => uri.fsPath);
     const workerScriptPath = path.join(__dirname, 'symbolPreScanWorker.js');
     const emptyResult: WorkerBatchResult = { candidateFilePaths: [], symbolMap: {} };
 
