@@ -38,7 +38,7 @@ const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const symbolIndexer_1 = require("./symbolIndexer");
 const workspaceScanner_1 = require("../utils/workspaceScanner");
-const GRAPH_CACHE_VERSION = 1;
+const GRAPH_CACHE_VERSION = 2;
 const PERSIST_DEBOUNCE_MS = 800;
 class WorkspaceGraphBuilder {
     indexer;
@@ -119,8 +119,8 @@ class WorkspaceGraphBuilder {
             }
             nodeMap.set(node.id, node);
         }
-        this.trimDanglingOutgoingEdgesFor(nodeMap);
-        this.populateIncomingCalls(nodeMap);
+        this.trimDanglingRelationshipsFor(nodeMap);
+        this.populateIncomingRelationships(nodeMap);
         const restoredSymbolCache = (0, symbolIndexer_1.deserializeIndexedSymbolMap)(snapshot.symbolCache);
         for (const node of nodeMap.values()) {
             if (!restoredSymbolCache.has(node.id)) {
@@ -143,7 +143,7 @@ class WorkspaceGraphBuilder {
         this.fileModifiedTimes = this.deserializeFileModifiedTimes(snapshot.fileModifiedTimes);
         this.initialIndexCompleted = true;
         this.dirty = false;
-        const edgeCount = [...nodeMap.values()].reduce((count, node) => count + node.outgoingCalls.length, 0);
+        const edgeCount = [...nodeMap.values()].reduce((count, node) => count + this.relationshipCountForNode(node), 0);
         this.logger.info(`Hydrated workspace graph from cache with ${nodeMap.size} nodes and ${edgeCount} edges.`);
         return true;
     }
@@ -185,10 +185,10 @@ class WorkspaceGraphBuilder {
             this.symbolCache.set(symbol.id, symbol);
             this.cachedGraph.nodes.set(symbol.id, this.toGraphNode(symbol));
         }
-        await this.populateOutgoingCallsForSymbols(symbols);
-        this.trimDanglingOutgoingEdges();
+        await this.populateNodeRelationshipsForSymbols([...this.symbolCache.values()]);
+        this.trimDanglingRelationships();
         this.rebuildFileIndex();
-        this.populateIncomingCalls(this.cachedGraph.nodes);
+        this.populateIncomingRelationships(this.cachedGraph.nodes);
         this.cachedGraph = {
             nodes: this.cachedGraph.nodes,
             fileIndex: this.cachedGraph.fileIndex,
@@ -210,9 +210,9 @@ class WorkspaceGraphBuilder {
         const filePath = (0, workspaceScanner_1.toWorkspaceRelativePath)(uri);
         this.removeFileSymbols(filePath);
         this.fileModifiedTimes.delete(filePath);
-        this.trimDanglingOutgoingEdges();
+        this.trimDanglingRelationships();
         this.rebuildFileIndex();
-        this.populateIncomingCalls(this.cachedGraph.nodes);
+        this.populateIncomingRelationships(this.cachedGraph.nodes);
         this.cachedGraph = {
             nodes: this.cachedGraph.nodes,
             fileIndex: this.cachedGraph.fileIndex,
@@ -240,10 +240,10 @@ class WorkspaceGraphBuilder {
             const indexedSymbols = indexResult.indexed;
             this.symbolCache = new Map(indexedSymbols);
             const nodeMap = this.createNodeMap(indexedSymbols);
-            await this.populateOutgoingCallsForSymbols([...indexedSymbols.values()], nodeMap);
-            this.populateIncomingCalls(nodeMap);
+            await this.populateNodeRelationshipsForSymbols([...indexedSymbols.values()], nodeMap);
+            this.populateIncomingRelationships(nodeMap);
             const fileIndex = this.createFileIndex(nodeMap);
-            const edgeCount = [...nodeMap.values()].reduce((count, node) => count + node.outgoingCalls.length, 0);
+            const edgeCount = [...nodeMap.values()].reduce((count, node) => count + this.relationshipCountForNode(node), 0);
             this.cachedGraph = {
                 nodes: nodeMap,
                 fileIndex,
@@ -288,7 +288,11 @@ class WorkspaceGraphBuilder {
                 rangeEndLine: symbol.range.end.line + 1,
                 rangeEndCharacter: symbol.range.end.character,
                 outgoingCalls: [],
+                implementations: [],
+                references: this.emptyReferenceBuckets(),
                 incomingCalls: [],
+                incomingImplementations: [],
+                incomingReferences: this.emptyReferenceBuckets(),
             });
             this.logGraphNodeCreation(symbol);
         }
@@ -308,31 +312,60 @@ class WorkspaceGraphBuilder {
             rangeEndLine: symbol.range.end.line + 1,
             rangeEndCharacter: symbol.range.end.character,
             outgoingCalls: [],
+            implementations: [],
+            references: this.emptyReferenceBuckets(),
             incomingCalls: [],
+            incomingImplementations: [],
+            incomingReferences: this.emptyReferenceBuckets(),
         };
     }
-    async populateOutgoingCallsForSymbols(symbols, targetNodes = this.cachedGraph.nodes) {
+    async populateNodeRelationshipsForSymbols(symbols, targetNodes = this.cachedGraph.nodes) {
+        for (const node of targetNodes.values()) {
+            node.outgoingCalls = [];
+            node.implementations = [];
+            node.references = this.emptyReferenceBuckets();
+        }
         let processed = 0;
         for (const symbol of symbols) {
             const node = targetNodes.get(symbol.id);
             if (!node) {
                 continue;
             }
-            if (!this.isCallableSymbol(symbol.symbolKind)) {
-                node.outgoingCalls = [];
-                continue;
+            if (this.isCallableSymbol(symbol.symbolKind)) {
+                const outgoing = await this.indexer.resolveOutgoingCalls(symbol, this.symbolCache);
+                node.outgoingCalls = outgoing.filter((targetId) => targetNodes.has(targetId) && targetId !== symbol.id);
             }
-            const outgoing = await this.indexer.resolveOutgoingCalls(symbol, this.symbolCache);
-            node.outgoingCalls = outgoing.filter((targetId) => targetNodes.has(targetId));
+            const implementations = await this.indexer.resolveImplementations(symbol, this.symbolCache);
+            node.implementations = implementations.filter((targetId) => targetNodes.has(targetId) && targetId !== symbol.id);
+            if (this.isVariableLikeSymbol(symbol.symbolKind)) {
+                const variableReferences = await this.indexer.resolveVariableReferences(symbol, this.symbolCache);
+                const filteredReferences = this.filterReferenceBuckets(variableReferences, targetNodes, symbol.id);
+                for (const sourceNodeId of filteredReferences.reads) {
+                    const sourceNode = targetNodes.get(sourceNodeId);
+                    if (!sourceNode || sourceNode.references.reads.includes(symbol.id)) {
+                        continue;
+                    }
+                    sourceNode.references.reads.push(symbol.id);
+                }
+                for (const sourceNodeId of filteredReferences.writes) {
+                    const sourceNode = targetNodes.get(sourceNodeId);
+                    if (!sourceNode || sourceNode.references.writes.includes(symbol.id)) {
+                        continue;
+                    }
+                    sourceNode.references.writes.push(symbol.id);
+                }
+            }
             processed += 1;
             if (processed % 25 === 0) {
                 await this.yieldToEventLoop();
             }
         }
     }
-    populateIncomingCalls(nodeMap) {
+    populateIncomingRelationships(nodeMap) {
         for (const node of nodeMap.values()) {
             node.incomingCalls = [];
+            node.incomingImplementations = [];
+            node.incomingReferences = this.emptyReferenceBuckets();
         }
         for (const node of nodeMap.values()) {
             for (const outgoingId of node.outgoingCalls) {
@@ -342,6 +375,33 @@ class WorkspaceGraphBuilder {
                 }
                 if (!target.incomingCalls.includes(node.id)) {
                     target.incomingCalls.push(node.id);
+                }
+            }
+            for (const implementationId of node.implementations) {
+                const target = nodeMap.get(implementationId);
+                if (!target) {
+                    continue;
+                }
+                if (!target.incomingImplementations.includes(node.id)) {
+                    target.incomingImplementations.push(node.id);
+                }
+            }
+            for (const readId of node.references.reads) {
+                const target = nodeMap.get(readId);
+                if (!target) {
+                    continue;
+                }
+                if (!target.incomingReferences.reads.includes(node.id)) {
+                    target.incomingReferences.reads.push(node.id);
+                }
+            }
+            for (const writeId of node.references.writes) {
+                const target = nodeMap.get(writeId);
+                if (!target) {
+                    continue;
+                }
+                if (!target.incomingReferences.writes.includes(node.id)) {
+                    target.incomingReferences.writes.push(node.id);
                 }
             }
         }
@@ -374,9 +434,12 @@ class WorkspaceGraphBuilder {
         }
         this.cachedGraph.fileIndex.delete(filePath);
     }
-    trimDanglingOutgoingEdges() {
+    trimDanglingRelationships() {
         for (const node of this.cachedGraph.nodes.values()) {
-            node.outgoingCalls = node.outgoingCalls.filter((targetId) => this.cachedGraph.nodes.has(targetId));
+            node.outgoingCalls = node.outgoingCalls.filter((targetId) => this.cachedGraph.nodes.has(targetId) && targetId !== node.id);
+            node.implementations = node.implementations.filter((targetId) => this.cachedGraph.nodes.has(targetId) && targetId !== node.id);
+            node.references.reads = node.references.reads.filter((targetId) => this.cachedGraph.nodes.has(targetId) && targetId !== node.id);
+            node.references.writes = node.references.writes.filter((targetId) => this.cachedGraph.nodes.has(targetId) && targetId !== node.id);
         }
     }
     rebuildFileIndex() {
@@ -472,6 +535,9 @@ class WorkspaceGraphBuilder {
             rangeEndLine: node.rangeEndLine,
             rangeEndCharacter: node.rangeEndCharacter,
             outgoingCalls: [...node.outgoingCalls],
+            implementations: [...node.implementations],
+            referenceReads: [...node.references.reads],
+            referenceWrites: [...node.references.writes],
         };
     }
     deserializeNode(node) {
@@ -488,10 +554,16 @@ class WorkspaceGraphBuilder {
             || typeof node.rangeStartCharacter !== 'number'
             || typeof node.rangeEndLine !== 'number'
             || typeof node.rangeEndCharacter !== 'number'
-            || !Array.isArray(node.outgoingCalls)) {
+            || !Array.isArray(node.outgoingCalls)
+            || !Array.isArray(node.implementations)
+            || !Array.isArray(node.referenceReads)
+            || !Array.isArray(node.referenceWrites)) {
             return undefined;
         }
         const outgoingCalls = node.outgoingCalls.filter((entry) => typeof entry === 'string');
+        const implementations = node.implementations.filter((entry) => typeof entry === 'string');
+        const referenceReads = node.referenceReads.filter((entry) => typeof entry === 'string');
+        const referenceWrites = node.referenceWrites.filter((entry) => typeof entry === 'string');
         return {
             id: node.id,
             symbolName: node.symbolName,
@@ -505,7 +577,14 @@ class WorkspaceGraphBuilder {
             rangeEndLine: node.rangeEndLine,
             rangeEndCharacter: node.rangeEndCharacter,
             outgoingCalls,
+            implementations,
+            references: {
+                reads: referenceReads,
+                writes: referenceWrites,
+            },
             incomingCalls: [],
+            incomingImplementations: [],
+            incomingReferences: this.emptyReferenceBuckets(),
         };
     }
     deserializeFileModifiedTimes(value) {
@@ -531,9 +610,12 @@ class WorkspaceGraphBuilder {
             range,
         };
     }
-    trimDanglingOutgoingEdgesFor(nodeMap) {
+    trimDanglingRelationshipsFor(nodeMap) {
         for (const node of nodeMap.values()) {
-            node.outgoingCalls = node.outgoingCalls.filter((targetId) => nodeMap.has(targetId));
+            node.outgoingCalls = node.outgoingCalls.filter((targetId) => nodeMap.has(targetId) && targetId !== node.id);
+            node.implementations = node.implementations.filter((targetId) => nodeMap.has(targetId) && targetId !== node.id);
+            node.references.reads = node.references.reads.filter((targetId) => nodeMap.has(targetId) && targetId !== node.id);
+            node.references.writes = node.references.writes.filter((targetId) => nodeMap.has(targetId) && targetId !== node.id);
         }
     }
     async refreshTrackedFileModifiedTimes(uris) {
@@ -591,6 +673,30 @@ class WorkspaceGraphBuilder {
     }
     isCallableSymbol(kind) {
         return kind === vscode.SymbolKind.Function || kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor;
+    }
+    isVariableLikeSymbol(kind) {
+        return (kind === vscode.SymbolKind.Variable
+            || kind === vscode.SymbolKind.Constant
+            || kind === vscode.SymbolKind.Field
+            || kind === vscode.SymbolKind.Property);
+    }
+    filterReferenceBuckets(references, targetNodes, symbolId) {
+        return {
+            reads: references.reads.filter((sourceId) => targetNodes.has(sourceId) && sourceId !== symbolId),
+            writes: references.writes.filter((sourceId) => targetNodes.has(sourceId) && sourceId !== symbolId),
+        };
+    }
+    emptyReferenceBuckets() {
+        return {
+            reads: [],
+            writes: [],
+        };
+    }
+    relationshipCountForNode(node) {
+        return node.outgoingCalls.length
+            + node.implementations.length
+            + node.references.reads.length
+            + node.references.writes.length;
     }
     logGraphNodeCreation(symbol) {
         if (!this.isSymbolDebugEnabled()) {

@@ -55,6 +55,11 @@ interface ResolvedDocumentSymbol {
   readonly range: vscode.Range;
 }
 
+export interface SymbolReferenceBuckets {
+  readonly reads: string[];
+  readonly writes: string[];
+}
+
 export interface IndexedSymbol {
   readonly id: string;
   readonly symbolName: string;
@@ -333,6 +338,88 @@ export class SymbolIndexer {
     }
 
     return [...outgoingIds];
+  }
+
+  public async resolveImplementations(
+    symbol: IndexedSymbol,
+    allSymbols: Map<string, IndexedSymbol>,
+  ): Promise<string[]> {
+    if (this.isVariableLikeSymbol(symbol.symbolKind)) {
+      return [];
+    }
+
+    const implementationIds = new Set<string>();
+
+    try {
+      const implementations = await vscode.commands.executeCommand<Array<vscode.Location | vscode.LocationLink>>(
+        'vscode.executeImplementationProvider',
+        symbol.uri,
+        symbol.range.start,
+      );
+
+      for (const entry of implementations ?? []) {
+        const location = this.toLocation(entry);
+        if (!location) {
+          continue;
+        }
+
+        const nodeId = this.findMatchingSymbolIdFromLocation(location, allSymbols);
+        if (nodeId && nodeId !== symbol.id) {
+          implementationIds.add(nodeId);
+        }
+      }
+    } catch {
+      return [];
+    }
+
+    return [...implementationIds];
+  }
+
+  public async resolveVariableReferences(
+    symbol: IndexedSymbol,
+    allSymbols: Map<string, IndexedSymbol>,
+  ): Promise<SymbolReferenceBuckets> {
+    if (!this.isVariableLikeSymbol(symbol.symbolKind)) {
+      return { reads: [], writes: [] };
+    }
+
+    const reads = new Set<string>();
+    const writes = new Set<string>();
+    const documentCache = new Map<string, vscode.TextDocument>();
+
+    try {
+      const references = await vscode.commands.executeCommand<Array<vscode.Location | vscode.LocationLink>>(
+        'vscode.executeReferenceProvider',
+        symbol.uri,
+        symbol.range.start,
+      );
+
+      for (const entry of references ?? []) {
+        const location = this.toLocation(entry);
+        if (!location || this.isLikelyDeclarationReference(symbol, location)) {
+          continue;
+        }
+
+        const sourceSymbolId = this.findContainingSymbolId(location, allSymbols, symbol.id);
+        if (!sourceSymbolId || sourceSymbolId === symbol.id) {
+          continue;
+        }
+
+        const accessType = await this.classifyReferenceAccess(symbol.symbolName, location, documentCache);
+        if (accessType === 'writes') {
+          writes.add(sourceSymbolId);
+        } else {
+          reads.add(sourceSymbolId);
+        }
+      }
+    } catch {
+      return { reads: [], writes: [] };
+    }
+
+    return {
+      reads: [...reads],
+      writes: [...writes],
+    };
   }
 
   private async runParallelPreScan(
@@ -664,6 +751,178 @@ export class SymbolIndexer {
     }
 
     return undefined;
+  }
+
+  private toLocation(candidate: vscode.Location | vscode.LocationLink): vscode.Location | undefined {
+    if (candidate instanceof vscode.Location) {
+      return candidate;
+    }
+
+    if (!candidate || typeof candidate !== 'object') {
+      return undefined;
+    }
+
+    const locationLink = candidate as vscode.LocationLink;
+    if (!(locationLink.targetUri instanceof vscode.Uri) || !(locationLink.targetSelectionRange instanceof vscode.Range)) {
+      return undefined;
+    }
+
+    return new vscode.Location(locationLink.targetUri, locationLink.targetSelectionRange);
+  }
+
+  private findMatchingSymbolIdFromLocation(
+    location: vscode.Location,
+    allSymbols: Map<string, IndexedSymbol>,
+  ): string | undefined {
+    const candidates = [...allSymbols.values()]
+      .filter((symbol) => symbol.uri.toString() === location.uri.toString());
+
+    if (candidates.length === 0) {
+      return undefined;
+    }
+
+    let bestCandidate: IndexedSymbol | undefined;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (const candidate of candidates) {
+      const containsPosition = candidate.range.contains(location.range.start);
+      const lineDistance = Math.abs(candidate.range.start.line - location.range.start.line);
+      const characterDistance = Math.abs(candidate.range.start.character - location.range.start.character);
+      const rangeSpan = ((candidate.range.end.line - candidate.range.start.line) * 1000)
+        + (candidate.range.end.character - candidate.range.start.character);
+
+      const basePenalty = containsPosition ? 0 : 100_000;
+      const score = basePenalty + (lineDistance * 100) + characterDistance + Math.max(0, rangeSpan);
+      if (score < bestScore) {
+        bestScore = score;
+        bestCandidate = candidate;
+      }
+    }
+
+    if (!bestCandidate) {
+      return undefined;
+    }
+
+    if (bestScore >= 100_000 && Math.abs(bestCandidate.range.start.line - location.range.start.line) > 3) {
+      return undefined;
+    }
+
+    return bestCandidate.id;
+  }
+
+  private findContainingSymbolId(
+    location: vscode.Location,
+    allSymbols: Map<string, IndexedSymbol>,
+    excludedSymbolId: string,
+  ): string | undefined {
+    const containingCandidates = [...allSymbols.values()]
+      .filter((symbol) => symbol.id !== excludedSymbolId)
+      .filter((symbol) => symbol.uri.toString() === location.uri.toString())
+      .filter((symbol) => symbol.range.contains(location.range.start));
+
+    if (containingCandidates.length === 0) {
+      return undefined;
+    }
+
+    const sorted = containingCandidates.sort((left, right) => {
+      const leftSpan = ((left.range.end.line - left.range.start.line) * 1000)
+        + (left.range.end.character - left.range.start.character);
+      const rightSpan = ((right.range.end.line - right.range.start.line) * 1000)
+        + (right.range.end.character - right.range.start.character);
+
+      if (leftSpan !== rightSpan) {
+        return leftSpan - rightSpan;
+      }
+
+      return left.lineNumber - right.lineNumber;
+    });
+
+    return sorted[0]?.id;
+  }
+
+  private isLikelyDeclarationReference(symbol: IndexedSymbol, location: vscode.Location): boolean {
+    if (symbol.uri.toString() !== location.uri.toString()) {
+      return false;
+    }
+
+    return (
+      symbol.range.start.line === location.range.start.line
+      && Math.abs(symbol.range.start.character - location.range.start.character) <= 2
+    );
+  }
+
+  private async classifyReferenceAccess(
+    symbolName: string,
+    location: vscode.Location,
+    documentCache: Map<string, vscode.TextDocument>,
+  ): Promise<'reads' | 'writes'> {
+    const cacheKey = location.uri.toString();
+    let document = documentCache.get(cacheKey);
+
+    if (!document) {
+      try {
+        document = await vscode.workspace.openTextDocument(location.uri);
+        documentCache.set(cacheKey, document);
+      } catch {
+        return 'reads';
+      }
+    }
+
+    const lineNumber = location.range.start.line;
+    if (lineNumber < 0 || lineNumber >= document.lineCount) {
+      return 'reads';
+    }
+
+    const lineText = document.lineAt(lineNumber).text;
+    const startCharacter = location.range.start.character;
+    const endCharacter = location.range.end.character > startCharacter
+      ? location.range.end.character
+      : startCharacter + symbolName.length;
+
+    const before = lineText.slice(0, Math.max(0, startCharacter));
+    const after = lineText.slice(Math.max(0, endCharacter));
+
+    if (/(\+\+|--)\s*$/.test(before.trimEnd()) || /^\s*(\+\+|--)/.test(after)) {
+      return 'writes';
+    }
+
+    const trimmedAfter = after.trimStart();
+    const assignmentOperators = [
+      '+=',
+      '-=',
+      '*=',
+      '/=',
+      '%=',
+      '&&=',
+      '||=',
+      '??=',
+      '<<=',
+      '>>=',
+      '>>>=',
+      '&=',
+      '|=',
+      '^=',
+      ':=',
+    ];
+
+    if (assignmentOperators.some((operator) => trimmedAfter.startsWith(operator))) {
+      return 'writes';
+    }
+
+    if (
+      trimmedAfter.startsWith('=')
+      && !trimmedAfter.startsWith('==')
+      && !trimmedAfter.startsWith('===')
+      && !trimmedAfter.startsWith('=>')
+    ) {
+      return 'writes';
+    }
+
+    if (/^\s*[,\]\)}]*\s*=/.test(after)) {
+      return 'writes';
+    }
+
+    return 'reads';
   }
 
   private normalizeName(name: string): string {

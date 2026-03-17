@@ -254,6 +254,33 @@ function createGraphInstance() {
         },
       },
       {
+        selector: 'edge[relationship = "implements"]',
+        style: {
+          width: 1.8,
+          'line-color': '#f59e0b',
+          'target-arrow-color': '#f59e0b',
+          opacity: 0.72,
+        },
+      },
+      {
+        selector: 'edge[relationship = "reads"]',
+        style: {
+          width: 1.35,
+          'line-color': '#22c55e',
+          'target-arrow-color': '#22c55e',
+          opacity: 0.66,
+        },
+      },
+      {
+        selector: 'edge[relationship = "writes"]',
+        style: {
+          width: 1.7,
+          'line-color': '#ef4444',
+          'target-arrow-color': '#ef4444',
+          opacity: 0.78,
+        },
+      },
+      {
         selector: 'edge[relationship = "file-dependency"]',
         style: {
           width: 2,
@@ -414,6 +441,9 @@ function prioritizeEdges(edges, maxEdges) {
 
   const score = {
     calls: 5,
+    implements: 5,
+    writes: 5,
+    reads: 4,
     'file-dependency': 4,
     'class-method': 4,
     'function-variable': 3,

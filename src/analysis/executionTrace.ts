@@ -1,8 +1,9 @@
-import { GraphNode, WorkspaceGraph } from '../graph/graphBuilder';
+import { GraphEdgeType, GraphNode, WorkspaceGraph } from '../graph/graphBuilder';
 
 export interface TraversalEdge {
   readonly from: string;
   readonly to: string;
+  readonly edgeType: GraphEdgeType;
 }
 
 export interface TraversalNode {
@@ -25,6 +26,7 @@ interface QueueEntry {
   readonly nodeId: string;
   readonly depth: number;
   readonly parentNodeId: string | undefined;
+  readonly parentEdgeType: GraphEdgeType | undefined;
 }
 
 export async function traceExecutionPath(
@@ -34,7 +36,7 @@ export async function traceExecutionPath(
 ): Promise<ExecutionTraceResult> {
   const normalizedMaxDepth = Math.max(0, Math.min(maxDepth, 25));
   const visited = new Set<string>();
-  const queue: QueueEntry[] = [{ nodeId: startNodeId, depth: 0, parentNodeId: undefined }];
+  const queue: QueueEntry[] = [{ nodeId: startNodeId, depth: 0, parentNodeId: undefined, parentEdgeType: undefined }];
   const nodes: TraversalNode[] = [];
   const edges: TraversalEdge[] = [];
 
@@ -55,16 +57,21 @@ export async function traceExecutionPath(
 
     nodes.push(toTraversalNode(graphNode, current.depth, current.parentNodeId));
     if (current.parentNodeId) {
-      edges.push({ from: current.parentNodeId, to: current.nodeId });
+      edges.push({
+        from: current.parentNodeId,
+        to: current.nodeId,
+        edgeType: current.parentEdgeType ?? 'calls',
+      });
     }
 
     if (current.depth < normalizedMaxDepth) {
-      for (const calleeId of graphNode.outgoingCalls) {
-        if (!visited.has(calleeId)) {
+      for (const edge of listOutgoingEdges(graphNode)) {
+        if (!visited.has(edge.to)) {
           queue.push({
-            nodeId: calleeId,
+            nodeId: edge.to,
             depth: current.depth + 1,
             parentNodeId: current.nodeId,
+            parentEdgeType: edge.edgeType,
           });
         }
       }
@@ -93,6 +100,28 @@ function toTraversalNode(node: GraphNode, depth: number, parentNodeId: string | 
     depth,
     parentNodeId,
   };
+}
+
+function listOutgoingEdges(node: GraphNode): TraversalEdge[] {
+  const edges: TraversalEdge[] = [];
+
+  for (const targetId of node.outgoingCalls) {
+    edges.push({ from: node.id, to: targetId, edgeType: 'calls' });
+  }
+
+  for (const targetId of node.implementations) {
+    edges.push({ from: node.id, to: targetId, edgeType: 'implements' });
+  }
+
+  for (const targetId of node.references.reads) {
+    edges.push({ from: node.id, to: targetId, edgeType: 'reads' });
+  }
+
+  for (const targetId of node.references.writes) {
+    edges.push({ from: node.id, to: targetId, edgeType: 'writes' });
+  }
+
+  return edges;
 }
 
 async function yieldToEventLoop(): Promise<void> {

@@ -15,6 +15,9 @@ export type CodeGraphRelationship =
   | 'function-variable'
   | 'method-variable'
   | 'calls'
+  | 'implements'
+  | 'reads'
+  | 'writes'
   | 'file-dependency';
 
 export interface NodeNavigationTarget {
@@ -161,6 +164,57 @@ function serializeWorkspaceGraph(graph: WorkspaceGraph): CodeGraphPayload {
       }
 
       addEdge(edges, edgeKeys, degreeByNodeId, symbol.id, targetId, 'calls');
+
+      if (symbol.filePath !== targetNode.filePath) {
+        const sourceFileNodeId = fileNodeByPath.get(symbol.filePath)?.id;
+        const targetFileNodeId = fileNodeByPath.get(targetNode.filePath)?.id;
+        if (sourceFileNodeId && targetFileNodeId) {
+          addEdge(edges, edgeKeys, degreeByNodeId, sourceFileNodeId, targetFileNodeId, 'file-dependency');
+        }
+      }
+    }
+
+    for (const targetId of symbol.implementations) {
+      const targetNode = graph.nodes.get(targetId);
+      if (!targetNode) {
+        continue;
+      }
+
+      addEdge(edges, edgeKeys, degreeByNodeId, symbol.id, targetId, 'implements');
+
+      if (symbol.filePath !== targetNode.filePath) {
+        const sourceFileNodeId = fileNodeByPath.get(symbol.filePath)?.id;
+        const targetFileNodeId = fileNodeByPath.get(targetNode.filePath)?.id;
+        if (sourceFileNodeId && targetFileNodeId) {
+          addEdge(edges, edgeKeys, degreeByNodeId, sourceFileNodeId, targetFileNodeId, 'file-dependency');
+        }
+      }
+    }
+
+    for (const targetId of symbol.references.reads) {
+      const targetNode = graph.nodes.get(targetId);
+      if (!targetNode) {
+        continue;
+      }
+
+      addEdge(edges, edgeKeys, degreeByNodeId, symbol.id, targetId, 'reads');
+
+      if (symbol.filePath !== targetNode.filePath) {
+        const sourceFileNodeId = fileNodeByPath.get(symbol.filePath)?.id;
+        const targetFileNodeId = fileNodeByPath.get(targetNode.filePath)?.id;
+        if (sourceFileNodeId && targetFileNodeId) {
+          addEdge(edges, edgeKeys, degreeByNodeId, sourceFileNodeId, targetFileNodeId, 'file-dependency');
+        }
+      }
+    }
+
+    for (const targetId of symbol.references.writes) {
+      const targetNode = graph.nodes.get(targetId);
+      if (!targetNode) {
+        continue;
+      }
+
+      addEdge(edges, edgeKeys, degreeByNodeId, symbol.id, targetId, 'writes');
 
       if (symbol.filePath !== targetNode.filePath) {
         const sourceFileNodeId = fileNodeByPath.get(symbol.filePath)?.id;

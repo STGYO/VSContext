@@ -4,7 +4,7 @@ exports.findImpactOfChange = findImpactOfChange;
 async function findImpactOfChange(graph, startNodeId, maxDepth = 25) {
     const normalizedMaxDepth = Math.max(0, Math.min(maxDepth, 25));
     const visited = new Set();
-    const queue = [{ nodeId: startNodeId, depth: 0, parentNodeId: undefined }];
+    const queue = [{ nodeId: startNodeId, depth: 0, parentNodeId: undefined, parentEdgeType: undefined }];
     const nodes = [];
     const edges = [];
     let iterations = 0;
@@ -20,15 +20,20 @@ async function findImpactOfChange(graph, startNodeId, maxDepth = 25) {
         }
         nodes.push(toTraversalNode(graphNode, current.depth, current.parentNodeId));
         if (current.parentNodeId) {
-            edges.push({ from: current.parentNodeId, to: current.nodeId });
+            edges.push({
+                from: current.parentNodeId,
+                to: current.nodeId,
+                edgeType: current.parentEdgeType ?? 'calls',
+            });
         }
         if (current.depth < normalizedMaxDepth) {
-            for (const callerId of graphNode.incomingCalls) {
-                if (!visited.has(callerId)) {
+            for (const edge of listIncomingEdges(graphNode)) {
+                if (!visited.has(edge.to)) {
                     queue.push({
-                        nodeId: callerId,
+                        nodeId: edge.to,
                         depth: current.depth + 1,
                         parentNodeId: current.nodeId,
+                        parentEdgeType: edge.edgeType,
                     });
                 }
             }
@@ -54,6 +59,22 @@ function toTraversalNode(node, depth, parentNodeId) {
         depth,
         parentNodeId,
     };
+}
+function listIncomingEdges(node) {
+    const edges = [];
+    for (const sourceId of node.incomingCalls) {
+        edges.push({ from: node.id, to: sourceId, edgeType: 'calls' });
+    }
+    for (const sourceId of node.incomingImplementations) {
+        edges.push({ from: node.id, to: sourceId, edgeType: 'implements' });
+    }
+    for (const sourceId of node.incomingReferences.reads) {
+        edges.push({ from: node.id, to: sourceId, edgeType: 'reads' });
+    }
+    for (const sourceId of node.incomingReferences.writes) {
+        edges.push({ from: node.id, to: sourceId, edgeType: 'writes' });
+    }
+    return edges;
 }
 async function yieldToEventLoop() {
     await new Promise((resolve) => {

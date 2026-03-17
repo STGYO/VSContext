@@ -109,6 +109,20 @@ function renderExecutionHtml(webview: vscode.Webview, result: ExecutionTraceResu
       fill: none;
       marker-end: url(#arrow);
     }
+    .edge.edge-calls {
+      stroke: #38bdf8;
+    }
+    .edge.edge-implements {
+      stroke: #f59e0b;
+    }
+    .edge.edge-reads {
+      stroke: #22c55e;
+      stroke-dasharray: 4 2;
+    }
+    .edge.edge-writes {
+      stroke: #ef4444;
+      stroke-width: 2;
+    }
     .node {
       cursor: pointer;
     }
@@ -291,10 +305,17 @@ function renderExecutionHtml(webview: vscode.Webview, result: ExecutionTraceResu
         const y2 = to.y + nodeHeight / 2;
         const control = Math.max(24, (x2 - x1) / 2);
 
-        appendSvgNode(edgeLayer, 'path', {
-          class: 'edge',
+        const edgeType = ['calls', 'implements', 'reads', 'writes'].includes(edge.edgeType)
+          ? edge.edgeType
+          : 'calls';
+
+        const path = appendSvgNode(edgeLayer, 'path', {
+          class: 'edge edge-' + edgeType,
           d: 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + control) + ' ' + y1 + ', ' + (x2 - control) + ' ' + y2 + ', ' + x2 + ' ' + y2,
         });
+
+        const edgeTitle = appendSvgNode(path, 'title', {});
+        edgeTitle.textContent = edgeType;
       }
 
       const nodeLayer = appendSvgNode(svg, 'g', {});
