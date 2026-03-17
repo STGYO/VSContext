@@ -35,6 +35,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
+const crypto = __importStar(require("crypto"));
+const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const impactAnalysis_1 = require("./analysis/impactAnalysis");
 const executionTrace_1 = require("./analysis/executionTrace");
@@ -47,6 +49,79 @@ const workspaceScanner_1 = require("./utils/workspaceScanner");
 const executionPanel_1 = require("./webview/executionPanel");
 const impactPanel_1 = require("./webview/impactPanel");
 const codeGraphView_1 = require("./views/codeGraphView");
+function createGraphCacheUri(context) {
+    const workspaceFolder = (0, workspaceScanner_1.getPrimaryWorkspaceFolder)();
+    if (!workspaceFolder) {
+        return undefined;
+    }
+    const workspaceHash = crypto
+        .createHash('sha256')
+        .update(workspaceFolder.uri.toString())
+        .digest('hex')
+        .slice(0, 16);
+    return vscode.Uri.file(path.join(context.globalStorageUri.fsPath, `graph-cache-${workspaceHash}.json`));
+}
+async function reconcileHydratedGraph(graphBuilder, logger, maxIndexedFiles) {
+    const workspaceFolder = (0, workspaceScanner_1.getPrimaryWorkspaceFolder)();
+    if (!workspaceFolder) {
+        return {
+            upserts: 0,
+            deletes: 0,
+        };
+    }
+    const scanResult = await (0, workspaceScanner_1.findWorkspaceSourceFiles)(maxIndexedFiles);
+    const cachedModifiedTimes = graphBuilder.getTrackedFileModifiedTimes();
+    const currentPaths = new Set();
+    const changedUris = [];
+    let checked = 0;
+    for (const uri of scanResult.files) {
+        const filePath = (0, workspaceScanner_1.toWorkspaceRelativePath)(uri);
+        currentPaths.add(filePath);
+        try {
+            const stat = await vscode.workspace.fs.stat(uri);
+            const cachedMtime = cachedModifiedTimes.get(filePath);
+            if (cachedMtime === undefined || Math.abs(cachedMtime - stat.mtime) > 1) {
+                changedUris.push(uri);
+            }
+        }
+        catch {
+            changedUris.push(uri);
+        }
+        checked += 1;
+        if (checked % 100 === 0) {
+            await new Promise((resolve) => {
+                setImmediate(resolve);
+            });
+        }
+    }
+    const deletedUris = [...cachedModifiedTimes.keys()]
+        .filter((filePath) => !currentPaths.has(filePath))
+        .map((filePath) => vscode.Uri.file(path.join(workspaceFolder.uri.fsPath, filePath)));
+    let processed = 0;
+    for (const uri of deletedUris) {
+        await graphBuilder.removeDocument(uri);
+        processed += 1;
+        if (processed % 25 === 0) {
+            await new Promise((resolve) => {
+                setImmediate(resolve);
+            });
+        }
+    }
+    for (const uri of changedUris) {
+        await graphBuilder.upsertDocument(uri);
+        processed += 1;
+        if (processed % 25 === 0) {
+            await new Promise((resolve) => {
+                setImmediate(resolve);
+            });
+        }
+    }
+    logger.info(`[VSContext] Hydrated graph refresh applied ${changedUris.length} upserts and ${deletedUris.length} deletes.`);
+    return {
+        upserts: changedUris.length,
+        deletes: deletedUris.length,
+    };
+}
 async function activate(context) {
     const logger = new logger_1.Logger('VSContext');
     context.subscriptions.push(logger);
@@ -55,7 +130,8 @@ async function activate(context) {
         logger.info('Activating VSContext extension.');
         const scanSettings = (0, workspaceScanner_1.getWorkspaceScanSettings)();
         const symbolIndexer = new symbolIndexer_1.SymbolIndexer(logger);
-        const graphBuilder = new graphBuilder_1.WorkspaceGraphBuilder(symbolIndexer, logger);
+        const cacheFileUri = createGraphCacheUri(context);
+        const graphBuilder = new graphBuilder_1.WorkspaceGraphBuilder(symbolIndexer, logger, cacheFileUri);
         const treeProvider = new contextTreeProvider_1.ContextTreeProvider(graphBuilder, logger);
         const treeView = vscode.window.createTreeView('vscontext.explorer', {
             treeDataProvider: treeProvider,
@@ -114,6 +190,7 @@ async function activate(context) {
             if (refreshTimer) {
                 clearTimeout(refreshTimer);
             }
+            void graphBuilder.flushPersistence();
         }), vscode.workspace.onDidSaveTextDocument((document) => {
             if (document.uri.scheme !== 'file') {
                 return;
@@ -237,13 +314,33 @@ async function activate(context) {
                 void vscode.window.showErrorMessage('VSContext failed to open the code graph view.');
             }
         }));
-        void vscode.window.withProgress({
-            location: vscode.ProgressLocation.Window,
-            title: 'VSContext: Indexing workspace',
-        }, async () => {
-            await graphBuilder.buildWorkspaceGraph();
+        const hydrated = await graphBuilder.hydrateFromCache();
+        if (hydrated) {
             treeProvider.refresh();
-        });
+            void vscode.window.withProgress({
+                location: vscode.ProgressLocation.Window,
+                title: 'VSContext: Refreshing cached graph',
+            }, async () => {
+                try {
+                    const refreshed = await reconcileHydratedGraph(graphBuilder, logger, scanSettings.maxIndexedFiles);
+                    if (refreshed.upserts > 0 || refreshed.deletes > 0) {
+                        treeProvider.refresh();
+                    }
+                }
+                catch (error) {
+                    logger.warn(`Failed to reconcile hydrated graph state. ${String(error)}`);
+                }
+            });
+        }
+        else {
+            void vscode.window.withProgress({
+                location: vscode.ProgressLocation.Window,
+                title: 'VSContext: Indexing workspace',
+            }, async () => {
+                await graphBuilder.buildWorkspaceGraph();
+                treeProvider.refresh();
+            });
+        }
         treeProvider.refresh();
         logger.info('VSContext activation completed.');
     }

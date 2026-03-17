@@ -34,11 +34,16 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.WorkspaceGraphBuilder = void 0;
+const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
+const symbolIndexer_1 = require("./symbolIndexer");
 const workspaceScanner_1 = require("../utils/workspaceScanner");
+const GRAPH_CACHE_VERSION = 1;
+const PERSIST_DEBOUNCE_MS = 800;
 class WorkspaceGraphBuilder {
     indexer;
     logger;
+    cacheFileUri;
     cachedGraph = {
         nodes: new Map(),
         fileIndex: new Map(),
@@ -48,9 +53,13 @@ class WorkspaceGraphBuilder {
     initialIndexCompleted = false;
     buildPromise;
     symbolCache = new Map();
-    constructor(indexer, logger) {
+    fileModifiedTimes = new Map();
+    persistTimer;
+    persistQueue = Promise.resolve();
+    constructor(indexer, logger, cacheFileUri) {
         this.indexer = indexer;
         this.logger = logger;
+        this.cacheFileUri = cacheFileUri;
     }
     markDirty() {
         this.dirty = true;
@@ -66,6 +75,84 @@ class WorkspaceGraphBuilder {
     }
     getNode(nodeId) {
         return this.cachedGraph.nodes.get(nodeId);
+    }
+    getTrackedFileModifiedTimes() {
+        return new Map(this.fileModifiedTimes);
+    }
+    async hydrateFromCache() {
+        if (!this.cacheFileUri) {
+            return false;
+        }
+        let rawContent;
+        try {
+            rawContent = await vscode.workspace.fs.readFile(this.cacheFileUri);
+        }
+        catch (error) {
+            if (this.isFileNotFoundError(error)) {
+                return false;
+            }
+            this.logger.warn(`Unable to read VSContext graph cache. Falling back to full rebuild. ${String(error)}`);
+            return false;
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(Buffer.from(rawContent).toString('utf8'));
+        }
+        catch {
+            this.logger.warn('VSContext graph cache is not valid JSON. Falling back to full rebuild.');
+            return false;
+        }
+        const snapshot = this.parseSnapshot(parsed);
+        if (!snapshot) {
+            this.logger.warn('VSContext graph cache schema is invalid. Falling back to full rebuild.');
+            return false;
+        }
+        const currentWorkspaceUri = (0, workspaceScanner_1.getPrimaryWorkspaceFolder)()?.uri.toString();
+        if (snapshot.workspaceFolderUri && currentWorkspaceUri && snapshot.workspaceFolderUri !== currentWorkspaceUri) {
+            return false;
+        }
+        const nodeMap = new Map();
+        for (const serializedNode of snapshot.nodes) {
+            const node = this.deserializeNode(serializedNode);
+            if (!node) {
+                continue;
+            }
+            nodeMap.set(node.id, node);
+        }
+        this.trimDanglingOutgoingEdgesFor(nodeMap);
+        this.populateIncomingCalls(nodeMap);
+        const restoredSymbolCache = (0, symbolIndexer_1.deserializeIndexedSymbolMap)(snapshot.symbolCache);
+        for (const node of nodeMap.values()) {
+            if (!restoredSymbolCache.has(node.id)) {
+                restoredSymbolCache.set(node.id, this.toIndexedSymbolFromNode(node));
+            }
+        }
+        for (const symbolId of [...restoredSymbolCache.keys()]) {
+            if (!nodeMap.has(symbolId)) {
+                restoredSymbolCache.delete(symbolId);
+            }
+        }
+        const builtAt = snapshot.builtAtIso ? new Date(snapshot.builtAtIso) : undefined;
+        const isBuiltAtValid = builtAt && !Number.isNaN(builtAt.getTime());
+        this.cachedGraph = {
+            nodes: nodeMap,
+            fileIndex: this.createFileIndex(nodeMap),
+            builtAt: isBuiltAtValid ? builtAt : undefined,
+        };
+        this.symbolCache = restoredSymbolCache;
+        this.fileModifiedTimes = this.deserializeFileModifiedTimes(snapshot.fileModifiedTimes);
+        this.initialIndexCompleted = true;
+        this.dirty = false;
+        const edgeCount = [...nodeMap.values()].reduce((count, node) => count + node.outgoingCalls.length, 0);
+        this.logger.info(`Hydrated workspace graph from cache with ${nodeMap.size} nodes and ${edgeCount} edges.`);
+        return true;
+    }
+    async flushPersistence() {
+        if (this.persistTimer) {
+            clearTimeout(this.persistTimer);
+            this.persistTimer = undefined;
+        }
+        await this.enqueuePersistence();
     }
     async getGraph() {
         if (!this.dirty) {
@@ -91,6 +178,7 @@ class WorkspaceGraphBuilder {
             return;
         }
         const filePath = (0, workspaceScanner_1.toWorkspaceRelativePath)(uri);
+        const modifiedAt = await this.getFileModifiedTime(uri);
         this.removeFileSymbols(filePath);
         const symbols = await this.indexer.indexDocumentSymbols(uri);
         for (const symbol of symbols) {
@@ -106,7 +194,11 @@ class WorkspaceGraphBuilder {
             fileIndex: this.cachedGraph.fileIndex,
             builtAt: new Date(),
         };
+        if (modifiedAt !== undefined) {
+            this.fileModifiedTimes.set(filePath, modifiedAt);
+        }
         this.dirty = false;
+        this.schedulePersistence();
     }
     async removeDocument(uri) {
         if (uri.scheme !== 'file') {
@@ -117,6 +209,7 @@ class WorkspaceGraphBuilder {
         }
         const filePath = (0, workspaceScanner_1.toWorkspaceRelativePath)(uri);
         this.removeFileSymbols(filePath);
+        this.fileModifiedTimes.delete(filePath);
         this.trimDanglingOutgoingEdges();
         this.rebuildFileIndex();
         this.populateIncomingCalls(this.cachedGraph.nodes);
@@ -126,6 +219,7 @@ class WorkspaceGraphBuilder {
             builtAt: new Date(),
         };
         this.dirty = false;
+        this.schedulePersistence();
     }
     async buildWorkspaceGraph() {
         if (this.buildPromise) {
@@ -155,10 +249,12 @@ class WorkspaceGraphBuilder {
                 fileIndex,
                 builtAt: new Date(),
             };
+            await this.refreshTrackedFileModifiedTimes(indexResult.scannedFiles);
             this.initialIndexCompleted = true;
             this.dirty = false;
             this.logIndexingSummary(indexResult);
             this.logger.info(`Workspace graph built with ${nodeMap.size} nodes and ${edgeCount} edges.`);
+            this.schedulePersistence();
             return this.cachedGraph;
         }
         catch (error) {
@@ -168,8 +264,11 @@ class WorkspaceGraphBuilder {
                 fileIndex: new Map(),
                 builtAt: new Date(),
             };
+            this.symbolCache = new Map();
+            this.fileModifiedTimes = new Map();
             this.initialIndexCompleted = true;
             this.dirty = false;
+            this.schedulePersistence();
             return this.cachedGraph;
         }
     }
@@ -286,6 +385,189 @@ class WorkspaceGraphBuilder {
             fileIndex: this.createFileIndex(this.cachedGraph.nodes),
             builtAt: this.cachedGraph.builtAt,
         };
+    }
+    schedulePersistence() {
+        if (!this.cacheFileUri || !this.initialIndexCompleted) {
+            return;
+        }
+        if (this.persistTimer) {
+            clearTimeout(this.persistTimer);
+        }
+        this.persistTimer = setTimeout(() => {
+            this.persistTimer = undefined;
+            void this.enqueuePersistence();
+        }, PERSIST_DEBOUNCE_MS);
+    }
+    async enqueuePersistence() {
+        if (!this.cacheFileUri || !this.initialIndexCompleted) {
+            return;
+        }
+        this.persistQueue = this.persistQueue
+            .then(async () => {
+            await this.persistSnapshot();
+        })
+            .catch((error) => {
+            this.logger.warn(`Unable to persist VSContext graph cache. ${String(error)}`);
+        });
+        await this.persistQueue;
+    }
+    async persistSnapshot() {
+        if (!this.cacheFileUri) {
+            return;
+        }
+        const directoryUri = vscode.Uri.file(path.dirname(this.cacheFileUri.fsPath));
+        await vscode.workspace.fs.createDirectory(directoryUri);
+        const snapshot = {
+            version: GRAPH_CACHE_VERSION,
+            workspaceFolderUri: (0, workspaceScanner_1.getPrimaryWorkspaceFolder)()?.uri.toString(),
+            savedAtIso: new Date().toISOString(),
+            builtAtIso: this.cachedGraph.builtAt?.toISOString(),
+            nodes: [...this.cachedGraph.nodes.values()].map((node) => this.serializeNode(node)),
+            symbolCache: (0, symbolIndexer_1.serializeIndexedSymbolMap)(this.symbolCache),
+            fileModifiedTimes: Object.fromEntries(this.fileModifiedTimes.entries()),
+        };
+        const payload = Buffer.from(JSON.stringify(snapshot), 'utf8');
+        await vscode.workspace.fs.writeFile(this.cacheFileUri, payload);
+    }
+    parseSnapshot(value) {
+        if (!value || typeof value !== 'object') {
+            return undefined;
+        }
+        const candidate = value;
+        if (candidate.version !== GRAPH_CACHE_VERSION) {
+            return undefined;
+        }
+        if (!Array.isArray(candidate.nodes) || !Array.isArray(candidate.symbolCache)) {
+            return undefined;
+        }
+        if (!candidate.fileModifiedTimes || typeof candidate.fileModifiedTimes !== 'object') {
+            return undefined;
+        }
+        const safeWorkspaceUri = typeof candidate.workspaceFolderUri === 'string' ? candidate.workspaceFolderUri : undefined;
+        const safeSavedAtIso = typeof candidate.savedAtIso === 'string' ? candidate.savedAtIso : '';
+        if (!safeSavedAtIso) {
+            return undefined;
+        }
+        const safeBuiltAtIso = typeof candidate.builtAtIso === 'string' ? candidate.builtAtIso : undefined;
+        return {
+            version: candidate.version,
+            workspaceFolderUri: safeWorkspaceUri,
+            savedAtIso: safeSavedAtIso,
+            builtAtIso: safeBuiltAtIso,
+            nodes: candidate.nodes,
+            symbolCache: candidate.symbolCache,
+            fileModifiedTimes: candidate.fileModifiedTimes,
+        };
+    }
+    serializeNode(node) {
+        return {
+            id: node.id,
+            symbolName: node.symbolName,
+            symbolKind: node.symbolKind,
+            filePath: node.filePath,
+            uriString: node.uriString,
+            lineNumber: node.lineNumber,
+            rangeStartLine: node.rangeStartLine,
+            rangeStartCharacter: node.rangeStartCharacter,
+            rangeEndLine: node.rangeEndLine,
+            rangeEndCharacter: node.rangeEndCharacter,
+            outgoingCalls: [...node.outgoingCalls],
+        };
+    }
+    deserializeNode(node) {
+        if (!node || typeof node !== 'object') {
+            return undefined;
+        }
+        if (typeof node.id !== 'string'
+            || typeof node.symbolName !== 'string'
+            || typeof node.symbolKind !== 'number'
+            || typeof node.filePath !== 'string'
+            || typeof node.uriString !== 'string'
+            || typeof node.lineNumber !== 'number'
+            || typeof node.rangeStartLine !== 'number'
+            || typeof node.rangeStartCharacter !== 'number'
+            || typeof node.rangeEndLine !== 'number'
+            || typeof node.rangeEndCharacter !== 'number'
+            || !Array.isArray(node.outgoingCalls)) {
+            return undefined;
+        }
+        const outgoingCalls = node.outgoingCalls.filter((entry) => typeof entry === 'string');
+        return {
+            id: node.id,
+            symbolName: node.symbolName,
+            symbolKind: node.symbolKind,
+            nodeType: this.resolveNodeType(node.symbolKind),
+            filePath: node.filePath,
+            uriString: node.uriString,
+            lineNumber: node.lineNumber,
+            rangeStartLine: node.rangeStartLine,
+            rangeStartCharacter: node.rangeStartCharacter,
+            rangeEndLine: node.rangeEndLine,
+            rangeEndCharacter: node.rangeEndCharacter,
+            outgoingCalls,
+            incomingCalls: [],
+        };
+    }
+    deserializeFileModifiedTimes(value) {
+        const map = new Map();
+        for (const [filePath, modifiedAt] of Object.entries(value)) {
+            if (typeof filePath !== 'string' || typeof modifiedAt !== 'number' || !Number.isFinite(modifiedAt)) {
+                continue;
+            }
+            map.set(filePath, modifiedAt);
+        }
+        return map;
+    }
+    toIndexedSymbolFromNode(node) {
+        const uri = vscode.Uri.parse(node.uriString);
+        const range = new vscode.Range(Math.max(0, node.rangeStartLine - 1), Math.max(0, node.rangeStartCharacter), Math.max(0, node.rangeEndLine - 1), Math.max(0, node.rangeEndCharacter));
+        return {
+            id: node.id,
+            symbolName: node.symbolName,
+            symbolKind: node.symbolKind,
+            uri,
+            filePath: node.filePath,
+            lineNumber: node.lineNumber,
+            range,
+        };
+    }
+    trimDanglingOutgoingEdgesFor(nodeMap) {
+        for (const node of nodeMap.values()) {
+            node.outgoingCalls = node.outgoingCalls.filter((targetId) => nodeMap.has(targetId));
+        }
+    }
+    async refreshTrackedFileModifiedTimes(uris) {
+        const next = new Map();
+        let processed = 0;
+        for (const uri of uris) {
+            if (uri.scheme !== 'file') {
+                continue;
+            }
+            const modifiedAt = await this.getFileModifiedTime(uri);
+            if (modifiedAt !== undefined) {
+                next.set((0, workspaceScanner_1.toWorkspaceRelativePath)(uri), modifiedAt);
+            }
+            processed += 1;
+            if (processed % 50 === 0) {
+                await this.yieldToEventLoop();
+            }
+        }
+        this.fileModifiedTimes = next;
+    }
+    async getFileModifiedTime(uri) {
+        try {
+            const stat = await vscode.workspace.fs.stat(uri);
+            return stat.mtime;
+        }
+        catch {
+            return undefined;
+        }
+    }
+    isFileNotFoundError(error) {
+        if (error instanceof vscode.FileSystemError) {
+            return /not found|enoent/i.test(error.message);
+        }
+        return false;
     }
     logIndexingSummary(indexResult) {
         this.logger.info(`[VSContext] Indexed ${indexResult.scannedFileCount} files.`);

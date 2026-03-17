@@ -51,8 +51,144 @@ export interface IndexedSymbol {
   readonly range: vscode.Range;
 }
 
+export interface SerializedIndexedSymbolRange {
+  readonly startLine: number;
+  readonly startCharacter: number;
+  readonly endLine: number;
+  readonly endCharacter: number;
+}
+
+export interface SerializedIndexedSymbol {
+  readonly id: string;
+  readonly symbolName: string;
+  readonly symbolKind: number;
+  readonly uriString: string;
+  readonly filePath: string;
+  readonly lineNumber: number;
+  readonly range: SerializedIndexedSymbolRange;
+}
+
+export function serializeIndexedSymbol(symbol: IndexedSymbol): SerializedIndexedSymbol {
+  return {
+    id: symbol.id,
+    symbolName: symbol.symbolName,
+    symbolKind: symbol.symbolKind,
+    uriString: symbol.uri.toString(),
+    filePath: symbol.filePath,
+    lineNumber: symbol.lineNumber,
+    range: {
+      startLine: symbol.range.start.line,
+      startCharacter: symbol.range.start.character,
+      endLine: symbol.range.end.line,
+      endCharacter: symbol.range.end.character,
+    },
+  };
+}
+
+export function deserializeIndexedSymbol(snapshot: SerializedIndexedSymbol): IndexedSymbol | undefined {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return undefined;
+  }
+
+  if (typeof snapshot.id !== 'string' || snapshot.id.length === 0) {
+    return undefined;
+  }
+
+  if (typeof snapshot.symbolName !== 'string' || snapshot.symbolName.length === 0) {
+    return undefined;
+  }
+
+  if (typeof snapshot.filePath !== 'string' || snapshot.filePath.length === 0) {
+    return undefined;
+  }
+
+  if (typeof snapshot.uriString !== 'string' || snapshot.uriString.length === 0) {
+    return undefined;
+  }
+
+  if (typeof snapshot.symbolKind !== 'number' || !Number.isFinite(snapshot.symbolKind)) {
+    return undefined;
+  }
+
+  if (typeof snapshot.lineNumber !== 'number' || !Number.isFinite(snapshot.lineNumber) || snapshot.lineNumber < 1) {
+    return undefined;
+  }
+
+  if (!snapshot.range || typeof snapshot.range !== 'object') {
+    return undefined;
+  }
+
+  const {
+    startLine,
+    startCharacter,
+    endLine,
+    endCharacter,
+  } = snapshot.range;
+
+  if (
+    typeof startLine !== 'number'
+    || typeof startCharacter !== 'number'
+    || typeof endLine !== 'number'
+    || typeof endCharacter !== 'number'
+    || !Number.isFinite(startLine)
+    || !Number.isFinite(startCharacter)
+    || !Number.isFinite(endLine)
+    || !Number.isFinite(endCharacter)
+    || startLine < 0
+    || startCharacter < 0
+    || endLine < 0
+    || endCharacter < 0
+  ) {
+    return undefined;
+  }
+
+  let uri: vscode.Uri;
+  try {
+    uri = vscode.Uri.parse(snapshot.uriString);
+  } catch {
+    return undefined;
+  }
+
+  const range = new vscode.Range(startLine, startCharacter, endLine, endCharacter);
+  const normalizedId = createSymbolNodeId(uri, snapshot.symbolName, startLine);
+
+  if (snapshot.id !== normalizedId) {
+    return undefined;
+  }
+
+  return {
+    id: snapshot.id,
+    symbolName: snapshot.symbolName,
+    symbolKind: snapshot.symbolKind,
+    uri,
+    filePath: snapshot.filePath,
+    lineNumber: snapshot.lineNumber,
+    range,
+  };
+}
+
+export function serializeIndexedSymbolMap(symbols: Map<string, IndexedSymbol>): SerializedIndexedSymbol[] {
+  return [...symbols.values()].map((symbol) => serializeIndexedSymbol(symbol));
+}
+
+export function deserializeIndexedSymbolMap(snapshots: SerializedIndexedSymbol[]): Map<string, IndexedSymbol> {
+  const restored = new Map<string, IndexedSymbol>();
+
+  for (const snapshot of snapshots) {
+    const symbol = deserializeIndexedSymbol(snapshot);
+    if (!symbol) {
+      continue;
+    }
+
+    restored.set(symbol.id, symbol);
+  }
+
+  return restored;
+}
+
 export interface WorkspaceIndexResult {
   readonly indexed: Map<string, IndexedSymbol>;
+  readonly scannedFiles: vscode.Uri[];
   readonly scannedFileCount: number;
   readonly indexedSymbolCount: number;
   readonly skippedByExclusions: number;
@@ -97,6 +233,7 @@ export class SymbolIndexer {
       this.logger.info(`[VSContext] Indexed ${indexed.size} symbols.`);
       return {
         indexed,
+        scannedFiles: scanResult.files,
         scannedFileCount: scanResult.files.length,
         indexedSymbolCount: indexed.size,
         skippedByExclusions: scanResult.skippedByExclusions,
@@ -106,6 +243,7 @@ export class SymbolIndexer {
       this.logger.error('Workspace symbol indexing failed.', error);
       return {
         indexed,
+        scannedFiles: [],
         scannedFileCount: 0,
         indexedSymbolCount: 0,
         skippedByExclusions: 0,
