@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- Expanded fallback symbol detection across all supported languages to improve class, method, and variable indexing reliability
+
 ## 0.1.3
 
 - Updated execution and impact analysis panels to render visual node-link graphs

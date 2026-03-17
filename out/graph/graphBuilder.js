@@ -1,6 +1,40 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.WorkspaceGraphBuilder = void 0;
+const vscode = __importStar(require("vscode"));
 const workspaceScanner_1 = require("../utils/workspaceScanner");
 class WorkspaceGraphBuilder {
     indexer;
@@ -146,6 +180,7 @@ class WorkspaceGraphBuilder {
                 id: symbol.id,
                 symbolName: symbol.symbolName,
                 symbolKind: symbol.symbolKind,
+                nodeType: this.resolveNodeType(symbol.symbolKind),
                 filePath: symbol.filePath,
                 uriString: symbol.uri.toString(),
                 lineNumber: symbol.lineNumber,
@@ -154,6 +189,7 @@ class WorkspaceGraphBuilder {
                 outgoingCalls: [],
                 incomingCalls: [],
             });
+            this.logGraphNodeCreation(symbol);
         }
         return nodeMap;
     }
@@ -162,6 +198,7 @@ class WorkspaceGraphBuilder {
             id: symbol.id,
             symbolName: symbol.symbolName,
             symbolKind: symbol.symbolKind,
+            nodeType: this.resolveNodeType(symbol.symbolKind),
             filePath: symbol.filePath,
             uriString: symbol.uri.toString(),
             lineNumber: symbol.lineNumber,
@@ -176,6 +213,10 @@ class WorkspaceGraphBuilder {
         for (const symbol of symbols) {
             const node = targetNodes.get(symbol.id);
             if (!node) {
+                continue;
+            }
+            if (!this.isCallableSymbol(symbol.symbolKind)) {
+                node.outgoingCalls = [];
                 continue;
             }
             const outgoing = await this.indexer.resolveOutgoingCalls(symbol, this.symbolCache);
@@ -246,6 +287,34 @@ class WorkspaceGraphBuilder {
         this.logger.info(`[VSContext] Indexed ${indexResult.scannedFileCount} files.`);
         this.logger.info(`[VSContext] Indexed ${indexResult.indexedSymbolCount} symbols.`);
         this.logger.info(`[VSContext] Skipped dependency directories: ${indexResult.skippedByExclusions} files.`);
+    }
+    resolveNodeType(kind) {
+        if (kind === vscode.SymbolKind.Class) {
+            return 'class';
+        }
+        if (kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor) {
+            return 'method';
+        }
+        if (kind === vscode.SymbolKind.Variable
+            || kind === vscode.SymbolKind.Constant
+            || kind === vscode.SymbolKind.Field
+            || kind === vscode.SymbolKind.Property) {
+            return 'variable';
+        }
+        return 'function';
+    }
+    isCallableSymbol(kind) {
+        return kind === vscode.SymbolKind.Function || kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor;
+    }
+    logGraphNodeCreation(symbol) {
+        if (!this.isSymbolDebugEnabled()) {
+            return;
+        }
+        const kindLabel = vscode.SymbolKind[symbol.symbolKind] ?? symbol.symbolKind.toString();
+        this.logger.info(`[VSContext][debug] Creating graph node: ${symbol.symbolName} (${kindLabel})`);
+    }
+    isSymbolDebugEnabled() {
+        return vscode.workspace.getConfiguration('vscontext').get('debugSymbolDetection', false);
     }
     async yieldToEventLoop() {
         await new Promise((resolve) => {

@@ -4,10 +4,13 @@ import { IndexedSymbol, SymbolIndexer, WorkspaceIndexResult } from './symbolInde
 import { Logger } from '../utils/logger';
 import { toWorkspaceRelativePath } from '../utils/workspaceScanner';
 
+export type GraphNodeType = 'class' | 'function' | 'method' | 'variable';
+
 export interface GraphNode {
   readonly id: string;
   readonly symbolName: string;
   readonly symbolKind: vscode.SymbolKind;
+  readonly nodeType: GraphNodeType;
   readonly filePath: string;
   readonly uriString: string;
   readonly lineNumber: number;
@@ -194,6 +197,7 @@ export class WorkspaceGraphBuilder {
         id: symbol.id,
         symbolName: symbol.symbolName,
         symbolKind: symbol.symbolKind,
+        nodeType: this.resolveNodeType(symbol.symbolKind),
         filePath: symbol.filePath,
         uriString: symbol.uri.toString(),
         lineNumber: symbol.lineNumber,
@@ -202,6 +206,8 @@ export class WorkspaceGraphBuilder {
         outgoingCalls: [],
         incomingCalls: [],
       });
+
+      this.logGraphNodeCreation(symbol);
     }
 
     return nodeMap;
@@ -212,6 +218,7 @@ export class WorkspaceGraphBuilder {
       id: symbol.id,
       symbolName: symbol.symbolName,
       symbolKind: symbol.symbolKind,
+      nodeType: this.resolveNodeType(symbol.symbolKind),
       filePath: symbol.filePath,
       uriString: symbol.uri.toString(),
       lineNumber: symbol.lineNumber,
@@ -231,6 +238,11 @@ export class WorkspaceGraphBuilder {
     for (const symbol of symbols) {
       const node = targetNodes.get(symbol.id);
       if (!node) {
+        continue;
+      }
+
+      if (!this.isCallableSymbol(symbol.symbolKind)) {
+        node.outgoingCalls = [];
         continue;
       }
 
@@ -318,6 +330,44 @@ export class WorkspaceGraphBuilder {
     this.logger.info(`[VSContext] Indexed ${indexResult.scannedFileCount} files.`);
     this.logger.info(`[VSContext] Indexed ${indexResult.indexedSymbolCount} symbols.`);
     this.logger.info(`[VSContext] Skipped dependency directories: ${indexResult.skippedByExclusions} files.`);
+  }
+
+  private resolveNodeType(kind: vscode.SymbolKind): GraphNodeType {
+    if (kind === vscode.SymbolKind.Class) {
+      return 'class';
+    }
+
+    if (kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor) {
+      return 'method';
+    }
+
+    if (
+      kind === vscode.SymbolKind.Variable
+      || kind === vscode.SymbolKind.Constant
+      || kind === vscode.SymbolKind.Field
+      || kind === vscode.SymbolKind.Property
+    ) {
+      return 'variable';
+    }
+
+    return 'function';
+  }
+
+  private isCallableSymbol(kind: vscode.SymbolKind): boolean {
+    return kind === vscode.SymbolKind.Function || kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor;
+  }
+
+  private logGraphNodeCreation(symbol: IndexedSymbol): void {
+    if (!this.isSymbolDebugEnabled()) {
+      return;
+    }
+
+    const kindLabel = (vscode.SymbolKind as unknown as Record<number, string>)[symbol.symbolKind] ?? symbol.symbolKind.toString();
+    this.logger.info(`[VSContext][debug] Creating graph node: ${symbol.symbolName} (${kindLabel})`);
+  }
+
+  private isSymbolDebugEnabled(): boolean {
+    return vscode.workspace.getConfiguration('vscontext').get<boolean>('debugSymbolDetection', false);
   }
 
   private async yieldToEventLoop(): Promise<void> {

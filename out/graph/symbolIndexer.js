@@ -45,6 +45,10 @@ const SUPPORTED_SYMBOL_KINDS = new Set([
     vscode.SymbolKind.Method,
     vscode.SymbolKind.Constructor,
     vscode.SymbolKind.Class,
+    vscode.SymbolKind.Variable,
+    vscode.SymbolKind.Constant,
+    vscode.SymbolKind.Field,
+    vscode.SymbolKind.Property,
 ]);
 function createSymbolNodeId(uri, symbolName, startLineZeroBased) {
     return `${uri.toString()}::${symbolName}::${startLineZeroBased + 1}`;
@@ -94,16 +98,30 @@ class SymbolIndexer {
         }
     }
     async indexDocumentSymbols(uri, fallbackSymbols = []) {
+        if (!this.shouldIndexUri(uri)) {
+            return [];
+        }
         const resolved = await this.resolveDocumentSymbols(uri);
-        if (resolved.length > 0) {
-            return resolved
-                .filter((symbol) => SUPPORTED_SYMBOL_KINDS.has(symbol.kind))
-                .map((symbol) => this.toIndexedSymbol(symbol));
+        const fromProvider = resolved
+            .filter((symbol) => SUPPORTED_SYMBOL_KINDS.has(symbol.kind))
+            .filter((symbol) => this.hasMeaningfulName(symbol.name, symbol.kind))
+            .map((symbol) => this.toIndexedSymbol(symbol));
+        const fromFallback = fallbackSymbols
+            .filter((symbol) => this.hasMeaningfulName(symbol.name, this.toSymbolKindFromFallback(symbol.kind)))
+            .map((symbol) => this.toIndexedSymbolFromFallback(uri, symbol));
+        const merged = new Map();
+        for (const symbol of fromProvider) {
+            merged.set(symbol.id, symbol);
         }
-        if (fallbackSymbols.length > 0) {
-            return fallbackSymbols.map((symbol) => this.toIndexedSymbolFromFallback(uri, symbol));
+        for (const symbol of fromFallback) {
+            if (!merged.has(symbol.id)) {
+                merged.set(symbol.id, symbol);
+            }
         }
-        return [];
+        const indexed = [...merged.values()];
+        this.logAcceptedSymbols(indexed);
+        this.logIndexedVariables(indexed);
+        return indexed;
     }
     async resolveOutgoingCalls(symbol, allSymbols) {
         if (!this.isCallableSymbol(symbol.symbolKind)) {
@@ -196,13 +214,17 @@ class SymbolIndexer {
         try {
             const resolved = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', uri);
             if (!resolved || resolved.length === 0) {
+                if (this.isSymbolDebugEnabled()) {
+                    this.logger.info(`[VSContext][debug] Raw symbols: none (${(0, workspaceScanner_1.toWorkspaceRelativePath)(uri)})`);
+                }
                 return [];
             }
             if (resolved[0] instanceof vscode.DocumentSymbol) {
-                return this.flattenDocumentSymbols(uri, resolved);
+                const flattened = this.flattenDocumentSymbols(uri, resolved);
+                this.logRawResolvedSymbols(uri, flattened);
+                return flattened;
             }
-            const asSymbolInfo = resolved;
-            return asSymbolInfo
+            const asSymbolInfo = resolved
                 .filter((entry) => entry.location instanceof vscode.Location)
                 .map((entry) => ({
                 name: entry.name,
@@ -210,6 +232,8 @@ class SymbolIndexer {
                 uri: entry.location.uri,
                 range: entry.location.range,
             }));
+            this.logRawResolvedSymbols(uri, asSymbolInfo);
+            return asSymbolInfo;
         }
         catch {
             return [];
@@ -227,7 +251,7 @@ class SymbolIndexer {
         };
     }
     toIndexedSymbolFromFallback(uri, symbol) {
-        const kind = symbol.kind === 'class' ? vscode.SymbolKind.Class : vscode.SymbolKind.Function;
+        const kind = this.toSymbolKindFromFallback(symbol.kind);
         const startLine = Math.max(0, symbol.line - 1);
         const range = new vscode.Range(startLine, 0, startLine, 1);
         return {
@@ -240,24 +264,41 @@ class SymbolIndexer {
             range,
         };
     }
-    flattenDocumentSymbols(uri, symbols) {
-        const queue = [...symbols];
-        const flattened = [];
-        while (queue.length > 0) {
-            const current = queue.shift();
-            if (!current) {
-                continue;
-            }
-            flattened.push({
-                name: current.name,
-                kind: current.kind,
-                range: current.range,
-                uri,
-            });
-            if (current.children && current.children.length > 0) {
-                queue.push(...current.children);
-            }
+    toSymbolKindFromFallback(kind) {
+        switch (kind) {
+            case 'class':
+                return vscode.SymbolKind.Class;
+            case 'method':
+                return vscode.SymbolKind.Method;
+            case 'variable':
+                return vscode.SymbolKind.Variable;
+            case 'constant':
+                return vscode.SymbolKind.Constant;
+            case 'field':
+                return vscode.SymbolKind.Field;
+            case 'property':
+                return vscode.SymbolKind.Property;
+            case 'function':
+            default:
+                return vscode.SymbolKind.Function;
         }
+    }
+    flattenDocumentSymbols(uri, symbols) {
+        const flattened = [];
+        const collectSymbols = (entries) => {
+            for (const current of entries) {
+                flattened.push({
+                    name: current.name,
+                    kind: current.kind,
+                    range: current.range,
+                    uri,
+                });
+                if (current.children && current.children.length > 0) {
+                    collectSymbols(current.children);
+                }
+            }
+        };
+        collectSymbols(symbols);
         return flattened;
     }
     async forEachWithConcurrency(values, concurrency, work) {
@@ -273,6 +314,72 @@ class SymbolIndexer {
     }
     isCallableSymbol(kind) {
         return kind === vscode.SymbolKind.Function || kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor;
+    }
+    isVariableLikeSymbol(kind) {
+        return (kind === vscode.SymbolKind.Variable
+            || kind === vscode.SymbolKind.Constant
+            || kind === vscode.SymbolKind.Field
+            || kind === vscode.SymbolKind.Property);
+    }
+    hasMeaningfulName(name, kind) {
+        const normalized = name.trim();
+        if (normalized.length === 0) {
+            return false;
+        }
+        if (!this.isVariableLikeSymbol(kind)) {
+            return true;
+        }
+        return !/^<.*>$/.test(normalized) && normalized.toLowerCase() !== 'anonymous';
+    }
+    shouldIndexUri(uri) {
+        if (uri.scheme !== 'file') {
+            return false;
+        }
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+        if (!workspaceFolder) {
+            return false;
+        }
+        const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath).replace(/\\/g, '/');
+        if (!relativePath || relativePath.startsWith('..')) {
+            return false;
+        }
+        return !this.isExcludedPath(relativePath);
+    }
+    isExcludedPath(relativePath) {
+        const segments = relativePath.split('/').map((segment) => segment.toLowerCase());
+        return segments.includes('node_modules') || segments.includes('dist') || segments.includes('build');
+    }
+    logIndexedVariables(symbols) {
+        for (const symbol of symbols) {
+            if (!this.isVariableLikeSymbol(symbol.symbolKind)) {
+                continue;
+            }
+            this.logger.info(`[VSContext] Indexed variable: ${symbol.symbolName} (${symbol.filePath})`);
+        }
+    }
+    logRawResolvedSymbols(uri, symbols) {
+        if (!this.isSymbolDebugEnabled()) {
+            return;
+        }
+        this.logger.info(`[VSContext][debug] Raw symbols: ${symbols.length.toString()} (${(0, workspaceScanner_1.toWorkspaceRelativePath)(uri)})`);
+        for (const symbol of symbols) {
+            this.logger.info(`[VSContext][debug] Raw symbol: ${symbol.name} (${this.symbolKindLabel(symbol.kind)})`);
+        }
+    }
+    logAcceptedSymbols(symbols) {
+        if (!this.isSymbolDebugEnabled()) {
+            return;
+        }
+        for (const symbol of symbols) {
+            this.logger.info(`[VSContext][debug] Indexed symbol: ${symbol.symbolName} (${this.symbolKindLabel(symbol.symbolKind)})`);
+        }
+    }
+    symbolKindLabel(kind) {
+        const label = vscode.SymbolKind[kind];
+        return typeof label === 'string' ? label : kind.toString();
+    }
+    isSymbolDebugEnabled() {
+        return vscode.workspace.getConfiguration('vscontext').get('debugSymbolDetection', false);
     }
     async yieldToEventLoop() {
         await new Promise((resolve) => {

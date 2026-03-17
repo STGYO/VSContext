@@ -95,28 +95,39 @@ class ContextTreeProvider {
                 .map((nodeId) => graph.nodes.get(nodeId))
                 .filter((node) => node !== undefined);
             const functionItems = symbols
-                .filter((node) => this.isFunctionLike(node.symbolKind))
+                .filter((node) => node.symbolKind === vscode.SymbolKind.Function)
+                .map((node) => this.createSymbolItem(node, true));
+            const methodItems = symbols
+                .filter((node) => this.isMethodLike(node.symbolKind))
                 .map((node) => this.createSymbolItem(node, true));
             const classItems = symbols
                 .filter((node) => node.symbolKind === vscode.SymbolKind.Class)
                 .map((node) => this.createSymbolItem(node, false));
-            const variableItems = symbols
-                .filter((node) => this.isVariableLike(node.symbolKind))
+            const constantItems = symbols
+                .filter((node) => node.symbolKind === vscode.SymbolKind.Constant)
+                .map((node) => this.createSymbolItem(node, false));
+            const fieldItems = symbols
+                .filter((node) => node.symbolKind === vscode.SymbolKind.Field || node.symbolKind === vscode.SymbolKind.Property)
+                .map((node) => this.createSymbolItem(node, false));
+            const localVariableItems = symbols
+                .filter((node) => node.symbolKind === vscode.SymbolKind.Variable)
                 .map((node) => this.createSymbolItem(node, false));
             const groupedChildren = [
                 new VSContextTreeItem('Functions', vscode.TreeItemCollapsibleState.Collapsed, `vscontext:file:${filePath}:functions`, functionItems.length > 0
                     ? functionItems
                     : [new VSContextTreeItem('No functions', vscode.TreeItemCollapsibleState.None, `vscontext:file:${filePath}:functions:empty`)]),
+                new VSContextTreeItem('Methods', vscode.TreeItemCollapsibleState.Collapsed, `vscontext:file:${filePath}:methods`, methodItems.length > 0
+                    ? methodItems
+                    : [new VSContextTreeItem('No methods', vscode.TreeItemCollapsibleState.None, `vscontext:file:${filePath}:methods:empty`)]),
                 new VSContextTreeItem('Classes', vscode.TreeItemCollapsibleState.Collapsed, `vscontext:file:${filePath}:classes`, classItems.length > 0
                     ? classItems
                     : [new VSContextTreeItem('No classes', vscode.TreeItemCollapsibleState.None, `vscontext:file:${filePath}:classes:empty`)]),
-                new VSContextTreeItem('Variables', vscode.TreeItemCollapsibleState.Collapsed, `vscontext:file:${filePath}:variables`, variableItems.length > 0
-                    ? variableItems
-                    : [new VSContextTreeItem('No variables', vscode.TreeItemCollapsibleState.None, `vscontext:file:${filePath}:variables:empty`)]),
+                new VSContextTreeItem('Variables', vscode.TreeItemCollapsibleState.Collapsed, `vscontext:file:${filePath}:variables`, this.buildVariableGroupChildren(`vscontext:file:${filePath}:variables`, constantItems, fieldItems, localVariableItems)),
             ];
             groupedChildren[0].iconPath = this.themeIcon('symbol-function');
-            groupedChildren[1].iconPath = this.themeIcon('symbol-class');
-            groupedChildren[2].iconPath = this.themeIcon('symbol-variable');
+            groupedChildren[1].iconPath = this.themeIcon('symbol-method');
+            groupedChildren[2].iconPath = this.themeIcon('symbol-class');
+            groupedChildren[3].iconPath = this.themeIcon('symbol-variable');
             const fileItem = new VSContextTreeItem(filePath || 'Unnamed File', vscode.TreeItemCollapsibleState.Collapsed, `vscontext:file:${filePath}`, groupedChildren);
             fileItem.iconPath = this.themeIcon('file');
             fileItems.push(fileItem);
@@ -143,12 +154,14 @@ class ContextTreeProvider {
                 ? 'vscontext.method'
                 : 'vscontext.class';
         item.iconPath = this.getNodeIcon(node.symbolKind);
+        this.logTreeNodeCreation(node);
         return item;
     }
     isFunctionLike(kind) {
-        return (kind === vscode.SymbolKind.Function
-            || kind === vscode.SymbolKind.Method
-            || kind === vscode.SymbolKind.Constructor);
+        return (kind === vscode.SymbolKind.Function);
+    }
+    isMethodLike(kind) {
+        return kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor;
     }
     isVariableLike(kind) {
         return (kind === vscode.SymbolKind.Variable
@@ -160,10 +173,22 @@ class ContextTreeProvider {
         if (this.isFunctionLike(kind)) {
             return this.themeIcon('symbol-function');
         }
+        if (this.isMethodLike(kind)) {
+            return this.themeIcon('symbol-method');
+        }
         if (kind === vscode.SymbolKind.Class) {
             return this.themeIcon('symbol-class');
         }
-        if (this.isVariableLike(kind)) {
+        if (kind === vscode.SymbolKind.Constant) {
+            return this.themeIcon('symbol-constant');
+        }
+        if (kind === vscode.SymbolKind.Field) {
+            return this.themeIcon('symbol-field');
+        }
+        if (kind === vscode.SymbolKind.Property) {
+            return this.themeIcon('symbol-property');
+        }
+        if (kind === vscode.SymbolKind.Variable) {
             return this.themeIcon('symbol-variable');
         }
         return this.themeIcon('symbol-misc');
@@ -175,28 +200,60 @@ class ContextTreeProvider {
     buildSymbolsNode(graph) {
         const allNodes = [...graph.nodes.values()];
         const functionItems = allNodes
-            .filter((node) => this.isFunctionLike(node.symbolKind))
+            .filter((node) => node.symbolKind === vscode.SymbolKind.Function)
+            .sort((left, right) => left.symbolName.localeCompare(right.symbolName))
+            .map((node) => this.createSymbolItem(node, true));
+        const methodItems = allNodes
+            .filter((node) => this.isMethodLike(node.symbolKind))
             .sort((left, right) => left.symbolName.localeCompare(right.symbolName))
             .map((node) => this.createSymbolItem(node, true));
         const classItems = allNodes
             .filter((node) => node.symbolKind === vscode.SymbolKind.Class)
             .sort((left, right) => left.symbolName.localeCompare(right.symbolName))
             .map((node) => this.createSymbolItem(node, false));
-        const variableItems = allNodes
-            .filter((node) => this.isVariableLike(node.symbolKind))
+        const constantItems = allNodes
+            .filter((node) => node.symbolKind === vscode.SymbolKind.Constant)
             .sort((left, right) => left.symbolName.localeCompare(right.symbolName))
             .map((node) => this.createSymbolItem(node, false));
+        const fieldItems = allNodes
+            .filter((node) => node.symbolKind === vscode.SymbolKind.Field || node.symbolKind === vscode.SymbolKind.Property)
+            .sort((left, right) => left.symbolName.localeCompare(right.symbolName))
+            .map((node) => this.createSymbolItem(node, false));
+        const localVariableItems = allNodes
+            .filter((node) => node.symbolKind === vscode.SymbolKind.Variable)
+            .sort((left, right) => left.symbolName.localeCompare(right.symbolName))
+            .map((node) => this.createSymbolItem(node, false));
+        const variableChildren = this.buildVariableGroupChildren('vscontext:symbols:variables', constantItems, fieldItems, localVariableItems);
         const symbolsNode = new VSContextTreeItem('Symbols', vscode.TreeItemCollapsibleState.Collapsed, 'vscontext:symbols', [
-            this.createSymbolCategoryItem('Functions', 'vscontext:symbols:functions', functionItems, 'symbol-function', 'No functions'),
             this.createSymbolCategoryItem('Classes', 'vscontext:symbols:classes', classItems, 'symbol-class', 'No classes'),
-            this.createSymbolCategoryItem('Variables', 'vscontext:symbols:variables', variableItems, 'symbol-variable', 'No variables'),
+            this.createSymbolCategoryItem('Functions', 'vscontext:symbols:functions', functionItems, 'symbol-function', 'No functions'),
+            this.createSymbolCategoryItem('Methods', 'vscontext:symbols:methods', methodItems, 'symbol-method', 'No methods'),
+            new VSContextTreeItem('Variables', vscode.TreeItemCollapsibleState.Collapsed, 'vscontext:symbols:variables', variableChildren),
         ]);
+        symbolsNode.children[3].iconPath = this.themeIcon('symbol-variable');
         return symbolsNode;
+    }
+    buildVariableGroupChildren(parentId, constantItems, fieldItems, localVariableItems) {
+        return [
+            this.createSymbolCategoryItem('Constants', `${parentId}:constants`, constantItems, 'symbol-constant', 'No constants'),
+            this.createSymbolCategoryItem('Fields', `${parentId}:fields`, fieldItems, 'symbol-field', 'No fields'),
+            this.createSymbolCategoryItem('Locals', `${parentId}:locals`, localVariableItems, 'symbol-variable', 'No local variables'),
+        ];
     }
     createSymbolCategoryItem(label, id, children, iconName, emptyLabel) {
         const category = new VSContextTreeItem(label, vscode.TreeItemCollapsibleState.Collapsed, id, children.length > 0 ? children : [new VSContextTreeItem(emptyLabel, vscode.TreeItemCollapsibleState.None, `${id}:empty`)]);
         category.iconPath = this.themeIcon(iconName);
         return category;
+    }
+    logTreeNodeCreation(node) {
+        if (!this.isSymbolDebugEnabled()) {
+            return;
+        }
+        const kindLabel = vscode.SymbolKind[node.symbolKind] ?? node.symbolKind.toString();
+        this.logger.info(`[VSContext][debug] Tree node created: ${node.symbolName} (${kindLabel})`);
+    }
+    isSymbolDebugEnabled() {
+        return vscode.workspace.getConfiguration('vscontext').get('debugSymbolDetection', false);
     }
 }
 exports.ContextTreeProvider = ContextTreeProvider;

@@ -2,7 +2,7 @@
   "name": "vscontext",
   "displayName": "VSContext",
   "description": "A stable VS Code extension for workspace symbol graphing, execution tracing, and impact analysis.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "ShriSrimoyTrivedy",
   "icon": "icon.png",
   "license": "MIT",
@@ -115,6 +115,11 @@
           "minimum": 1,
           "maximum": 8,
           "description": "Maximum number of worker threads used for VSContext pre-scan processing."
+        },
+        "vscontext.debugSymbolDetection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable verbose symbol extraction, graph node creation, and tree node creation diagnostics in the VSContext output channel."
         }
       }
     }
