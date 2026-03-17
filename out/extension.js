@@ -46,6 +46,7 @@ const symbolResolver_1 = require("./utils/symbolResolver");
 const workspaceScanner_1 = require("./utils/workspaceScanner");
 const executionPanel_1 = require("./webview/executionPanel");
 const impactPanel_1 = require("./webview/impactPanel");
+const codeGraphView_1 = require("./views/codeGraphView");
 async function activate(context) {
     const logger = new logger_1.Logger('VSContext');
     context.subscriptions.push(logger);
@@ -225,6 +226,15 @@ async function activate(context) {
             catch (error) {
                 logger.error('Command failed: vscontext.findImpact', error);
                 void vscode.window.showErrorMessage('VSContext impact analysis failed.');
+            }
+        }), vscode.commands.registerCommand('vscontext.viewCodeGraph', async () => {
+            try {
+                logger.info('Command executed: vscontext.viewCodeGraph');
+                await (0, codeGraphView_1.openCodeGraphView)(context, graphBuilder, logger);
+            }
+            catch (error) {
+                logger.error('Command failed: vscontext.viewCodeGraph', error);
+                void vscode.window.showErrorMessage('VSContext failed to open the code graph view.');
             }
         }));
         void vscode.window.withProgress({

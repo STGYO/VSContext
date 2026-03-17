@@ -1,0 +1,160 @@
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+#graph-shell {
+  position: relative;
+  flex: 1;
+  min-height: 220px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: color-mix(in srgb, var(--vscode-editor-background) 88%, #000 12%);
+}
+
+.toolbar-left h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.toolbar-left p {
+  margin: 4px 0 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+button {
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border-radius: 6px;
+  font: inherit;
+  line-height: 1;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+#notice {
+  min-height: 22px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+#graph {
+  width: 100%;
+  height: 100%;
+}
+
+#zoom-controls {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 10px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--vscode-editor-background) 84%, #000 16%);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 25%);
+  pointer-events: none;
+  z-index: 6;
+}
+
+#zoom-controls button {
+  min-width: 30px;
+  min-height: 26px;
+  padding: 0;
+  font-size: 16px;
+  font-weight: 700;
+  border-radius: 8px;
+  pointer-events: auto;
+}
+
+#zoom-level {
+  min-width: 56px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+#legend {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  min-width: 138px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--vscode-editor-background) 88%, #000 12%);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 20%);
+  pointer-events: none;
+  z-index: 5;
+}
+
+#legend h3 {
+  margin: 0 0 7px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--vscode-descriptionForeground);
+}
+
+#legend ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+}
+
+#legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}

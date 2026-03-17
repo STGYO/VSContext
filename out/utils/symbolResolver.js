@@ -86,9 +86,10 @@ async function openGraphNodeInEditor(node) {
     const uri = vscode.Uri.parse(node.uriString);
     const document = await vscode.workspace.openTextDocument(uri);
     const editor = await vscode.window.showTextDocument(document, { preview: false });
-    const position = new vscode.Position(Math.max(0, node.lineNumber - 1), 0);
-    const range = new vscode.Range(position, position);
-    editor.selection = new vscode.Selection(position, position);
+    const start = new vscode.Position(Math.max(0, node.rangeStartLine - 1), Math.max(0, node.rangeStartCharacter));
+    const end = new vscode.Position(Math.max(0, node.rangeEndLine - 1), Math.max(0, node.rangeEndCharacter));
+    const range = new vscode.Range(start, end);
+    editor.selection = new vscode.Selection(start, end);
     editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 }
 //# sourceMappingURL=symbolResolver.js.map

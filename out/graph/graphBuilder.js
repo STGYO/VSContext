@@ -185,7 +185,9 @@ class WorkspaceGraphBuilder {
                 uriString: symbol.uri.toString(),
                 lineNumber: symbol.lineNumber,
                 rangeStartLine: symbol.range.start.line + 1,
+                rangeStartCharacter: symbol.range.start.character,
                 rangeEndLine: symbol.range.end.line + 1,
+                rangeEndCharacter: symbol.range.end.character,
                 outgoingCalls: [],
                 incomingCalls: [],
             });
@@ -203,7 +205,9 @@ class WorkspaceGraphBuilder {
             uriString: symbol.uri.toString(),
             lineNumber: symbol.lineNumber,
             rangeStartLine: symbol.range.start.line + 1,
+            rangeStartCharacter: symbol.range.start.character,
             rangeEndLine: symbol.range.end.line + 1,
+            rangeEndCharacter: symbol.range.end.character,
             outgoingCalls: [],
             incomingCalls: [],
         };

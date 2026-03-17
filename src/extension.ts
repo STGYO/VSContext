@@ -10,6 +10,7 @@ import { openGraphNodeInEditor, resolveSelectedSymbol } from './utils/symbolReso
 import { getWorkspaceScanSettings } from './utils/workspaceScanner';
 import { openExecutionPanel } from './webview/executionPanel';
 import { openImpactPanel } from './webview/impactPanel';
+import { openCodeGraphView } from './views/codeGraphView';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const logger = new Logger('VSContext');
@@ -235,6 +236,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         } catch (error) {
           logger.error('Command failed: vscontext.findImpact', error);
           void vscode.window.showErrorMessage('VSContext impact analysis failed.');
+        }
+      }),
+
+      vscode.commands.registerCommand('vscontext.viewCodeGraph', async () => {
+        try {
+          logger.info('Command executed: vscontext.viewCodeGraph');
+          await openCodeGraphView(context, graphBuilder, logger);
+        } catch (error) {
+          logger.error('Command failed: vscontext.viewCodeGraph', error);
+          void vscode.window.showErrorMessage('VSContext failed to open the code graph view.');
         }
       }),
     );

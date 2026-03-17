@@ -15,7 +15,9 @@ export interface GraphNode {
   readonly uriString: string;
   readonly lineNumber: number;
   readonly rangeStartLine: number;
+  readonly rangeStartCharacter: number;
   readonly rangeEndLine: number;
+  readonly rangeEndCharacter: number;
   outgoingCalls: string[];
   incomingCalls: string[];
 }
@@ -202,7 +204,9 @@ export class WorkspaceGraphBuilder {
         uriString: symbol.uri.toString(),
         lineNumber: symbol.lineNumber,
         rangeStartLine: symbol.range.start.line + 1,
+        rangeStartCharacter: symbol.range.start.character,
         rangeEndLine: symbol.range.end.line + 1,
+        rangeEndCharacter: symbol.range.end.character,
         outgoingCalls: [],
         incomingCalls: [],
       });
@@ -223,7 +227,9 @@ export class WorkspaceGraphBuilder {
       uriString: symbol.uri.toString(),
       lineNumber: symbol.lineNumber,
       rangeStartLine: symbol.range.start.line + 1,
+      rangeStartCharacter: symbol.range.start.character,
       rangeEndLine: symbol.range.end.line + 1,
+      rangeEndCharacter: symbol.range.end.character,
       outgoingCalls: [],
       incomingCalls: [],
     };

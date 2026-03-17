@@ -4,6 +4,7 @@ VSContext is a single, free VS Code extension that builds a workspace symbol gra
 
 - Execution trace from a selected function
 - Impact analysis from a selected function
+- Full codebase graph view (interactive mind map)
 
 ## Screenshot
 
@@ -13,6 +14,7 @@ VSContext is a single, free VS Code extension that builds a workspace symbol gra
 
 - `VSContext: Trace Path`
 - `VSContext: Impact`
+- `VSContext: View Code Graph`
 
 ## Installation
 
@@ -35,7 +37,7 @@ The `VSContext` view contains:
 - `Workspace`
 - `Files` with grouped functions, classes, and variables
 - `Symbols` grouped by type
-- View title toolbar actions: `Trace Path` and `Impact`
+- View title toolbar actions: `Trace Path`, `Impact`, and `View Code Graph`
 
 ## Usage
 
@@ -44,6 +46,7 @@ The `VSContext` view contains:
 1. Expand `Workspace` and browse indexed methods under `Files`.
 1. Select a function and run `VSContext: Trace Path` from the view title toolbar.
 1. Select a function and run `VSContext: Impact` from the view title toolbar.
+1. Run `VSContext: View Code Graph` from the view title toolbar to open the full workspace graph.
 1. Click nodes in either analysis panel to jump to source.
 
 ## Supported Indexing Scope

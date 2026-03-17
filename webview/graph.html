@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {{cspSource}} data:; style-src {{cspSource}}; script-src 'nonce-{{nonce}}';" />
+  <title>VSContext Code Graph</title>
+  <link nonce="{{nonce}}" rel="stylesheet" href="{{styleUri}}" />
+</head>
+<body>
+  <div id="app">
+    <header class="toolbar">
+      <div class="toolbar-left">
+        <h2>Codebase Graph</h2>
+        <p id="summary">Waiting for graph data...</p>
+      </div>
+      <div class="toolbar-right">
+        <button id="fit-view" type="button">Fit</button>
+        <button id="relayout" type="button">Relayout</button>
+        <button id="load-more" type="button">Load More</button>
+      </div>
+    </header>
+
+    <div id="notice" aria-live="polite"></div>
+    <section id="graph-shell">
+      <main id="graph" role="application" aria-label="VSContext code graph"></main>
+
+      <div id="zoom-controls" aria-label="Graph zoom controls">
+        <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+        <span id="zoom-level" aria-live="polite">100%</span>
+        <button id="zoom-out" type="button" aria-label="Zoom out">-</button>
+      </div>
+
+      <aside id="legend" aria-label="Graph legend">
+        <h3>Legend</h3>
+        <ul>
+          <li><span class="legend-swatch" data-node-type="file"></span>File</li>
+          <li><span class="legend-swatch" data-node-type="class"></span>Class</li>
+          <li><span class="legend-swatch" data-node-type="function"></span>Function</li>
+          <li><span class="legend-swatch" data-node-type="method"></span>Method</li>
+          <li><span class="legend-swatch" data-node-type="variable"></span>Variable</li>
+        </ul>
+      </aside>
+    </section>
+  </div>
+
+  <script nonce="{{nonce}}" src="{{cytoscapeUri}}"></script>
+  <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
+</body>
+</html>
