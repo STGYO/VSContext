@@ -3,10 +3,25 @@
 const vscode = acquireVsCodeApi();
 
 const MAX_VISIBLE_EDGES = 22000;
+const MIN_EDGE_BUDGET = 1500;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 5;
 const ZOOM_STEP_FACTOR = 1.1;
 const ZOOM_ANIMATION_MS = 180;
+const SEARCH_INPUT_DEBOUNCE_MS = 150;
+const LOW_DETAIL_ZOOM_THRESHOLD = 0.52;
+const LOW_DETAIL_NODE_THRESHOLD = 180;
+const LOW_DETAIL_EDGE_THRESHOLD = 420;
+
+const STRUCTURAL_EDGE_TYPES = new Set([
+	'file-class',
+	'file-function',
+	'file-method',
+	'file-variable',
+	'class-method',
+	'function-variable',
+	'method-variable',
+]);
 
 const EDGE_PRIORITY = {
 	calls: 7,
@@ -48,12 +63,33 @@ const state = {
 		totalNodeCount: 0,
 		totalEdgeCount: 0,
 	},
+	view: {
+		edgeBudget: MAX_VISIBLE_EDGES,
+		hideStructuralEdges: false,
+		hideVariables: false,
+		smartLabels: true,
+		searchQuery: '',
+	},
+	viewStats: {
+		visibleNodeCount: 0,
+		visibleEdgeCount: 0,
+		renderedEdgeCount: 0,
+		truncatedByEdgeBudget: false,
+	},
+	searchDebounceHandle: undefined,
 };
 
 const elements = {
 	graph: document.getElementById('graph'),
 	summary: document.getElementById('summary'),
 	notice: document.getElementById('notice'),
+	searchInput: document.getElementById('graph-search'),
+	edgeBudget: document.getElementById('edge-budget'),
+	edgeBudgetValue: document.getElementById('edge-budget-value'),
+	toggleContainment: document.getElementById('toggle-containment'),
+	toggleVariables: document.getElementById('toggle-variables'),
+	toggleSmartLabels: document.getElementById('toggle-smart-labels'),
+	resetFilters: document.getElementById('reset-filters'),
 	viewToggle: document.getElementById('view-toggle'),
 	fitView: document.getElementById('fit-view'),
 	relayout: document.getElementById('relayout'),
@@ -149,6 +185,57 @@ bindClick(elements.expandAll, () => {
 	runLayout(false);
 });
 
+bindClick(elements.toggleContainment, () => {
+	state.view.hideStructuralEdges = !state.view.hideStructuralEdges;
+	updateFilterControlStates();
+	renderVisibleGraph();
+});
+
+bindClick(elements.toggleVariables, () => {
+	state.view.hideVariables = !state.view.hideVariables;
+	updateFilterControlStates();
+	renderVisibleGraph();
+});
+
+bindClick(elements.toggleSmartLabels, () => {
+	state.view.smartLabels = !state.view.smartLabels;
+	updateFilterControlStates();
+	applyAdaptiveDetailMode();
+});
+
+bindClick(elements.resetFilters, () => {
+	resetClarityControls();
+	renderVisibleGraph();
+});
+
+if (elements.edgeBudget) {
+	elements.edgeBudget.addEventListener('input', () => {
+		const nextValue = Number(elements.edgeBudget.value);
+		if (!Number.isFinite(nextValue)) {
+			return;
+		}
+
+		state.view.edgeBudget = clamp(Math.round(nextValue), MIN_EDGE_BUDGET, MAX_VISIBLE_EDGES);
+		updateEdgeBudgetLabel();
+		renderVisibleGraph();
+	});
+}
+
+if (elements.searchInput) {
+	elements.searchInput.addEventListener('input', () => {
+		if (state.searchDebounceHandle) {
+			window.clearTimeout(state.searchDebounceHandle);
+		}
+
+		state.searchDebounceHandle = window.setTimeout(() => {
+			state.view.searchQuery = (elements.searchInput.value || '').trim();
+			renderVisibleGraph();
+		}, SEARCH_INPUT_DEBOUNCE_MS);
+	});
+}
+
+resetClarityControls();
+updateFilterControlStates();
 updateViewToggleButton();
 updateDirectionButton();
 vscode.postMessage({ type: 'ready' });
@@ -183,15 +270,9 @@ function applyGraphPayload(payload, envelope) {
 	}
 
 	renderVisibleGraph();
-	updateSummary(state.totals.totalNodeCount, state.totals.totalEdgeCount);
 	updateLoadMoreButton();
 	updateZoomLevel(state.cy.zoom());
-
-	if (state.loadState.canLoadMore) {
-		setNotice('Large graph detected. Use Load More to fetch additional nodes.');
-	} else {
-		setNotice(state.loadState.wasTruncated ? 'All available nodes are loaded.' : 'Graph loaded.');
-	}
+	setNotice(buildRenderNotice(getBaseLoadNotice()));
 }
 
 function appendGraphPayload(payload, envelope) {
@@ -219,16 +300,15 @@ function appendGraphPayload(payload, envelope) {
 	state.totals = sanitizeTotals(envelope && envelope.totals, state.payload);
 
 	renderVisibleGraph();
-	updateSummary(state.totals.totalNodeCount, state.totals.totalEdgeCount);
 	updateLoadMoreButton();
 
 	const appendedNodeCount = Number.isFinite(envelope && envelope.appendedNodeCount)
 		? Number(envelope.appendedNodeCount)
 		: payload.nodes.length;
 	if (appendedNodeCount > 0) {
-		setNotice(`Loaded ${appendedNodeCount} more nodes.`);
+		setNotice(buildRenderNotice(`Loaded ${appendedNodeCount} more nodes.`));
 	} else if (!state.loadState.canLoadMore) {
-		setNotice('All available nodes are loaded.');
+		setNotice(buildRenderNotice('All available nodes are loaded.'));
 	}
 }
 
@@ -447,6 +527,20 @@ function createGraphInstance() {
 				},
 			},
 			{
+				selector: 'node.label-hidden',
+				style: {
+					label: '',
+				},
+			},
+			{
+				selector: 'edge.edge-low-detail',
+				style: {
+					opacity: 0.24,
+					width: 1,
+					'target-arrow-shape': 'none',
+				},
+			},
+			{
 				selector: 'node.compound-collapsed',
 				style: {
 					'background-opacity': 0.04,
@@ -538,6 +632,7 @@ function wireInteractions(cy) {
 
 	cy.on('zoom', () => {
 		updateZoomLevel(cy.zoom());
+		applyAdaptiveDetailMode();
 		hideTooltip();
 	});
 
@@ -551,15 +646,16 @@ function renderVisibleGraph() {
 		return;
 	}
 
-	const visibleNodes = state.payload.nodes;
-	const visibleEdges = state.payload.edges;
+	const filtered = computeFilteredGraphSnapshot();
+	const degreeByNodeId = buildNodeDegreeMap(filtered.visibleEdges);
+	state.viewStats = {
+		visibleNodeCount: filtered.visibleNodes.length,
+		visibleEdgeCount: filtered.visibleEdges.length,
+		renderedEdgeCount: filtered.renderedEdges.length,
+		truncatedByEdgeBudget: filtered.visibleEdges.length > filtered.renderedEdges.length,
+	};
 
-	const limitedEdges = prioritizeEdges(visibleEdges, MAX_VISIBLE_EDGES);
-	if (visibleEdges.length > limitedEdges.length) {
-		setNotice(`Rendered ${limitedEdges.length} of ${visibleEdges.length} visible edges for performance.`);
-	}
-
-	const compoundNodes = buildCompoundNodeDefinitions(visibleNodes, visibleEdges);
+	const compoundNodes = buildCompoundNodeDefinitions(filtered.visibleNodes, state.payload.edges);
 	const nodeById = new Map(compoundNodes.map((node) => [node.id, node]));
 
 	const cytoscapeElements = [
@@ -573,7 +669,7 @@ function renderVisibleGraph() {
 					id: node.id,
 					parent: parentId,
 					label: buildNodeLabel(node),
-					degree: node.degree || 0,
+					degree: degreeByNodeId.get(node.id) || node.degree || 0,
 					type: node.type,
 					filePath: node.filePath,
 					uriString: node.uriString,
@@ -586,7 +682,7 @@ function renderVisibleGraph() {
 				},
 			};
 		}),
-		...limitedEdges.map((edge) => ({
+		...filtered.renderedEdges.map((edge) => ({
 			data: {
 				id: edge.id,
 				source: edge.source,
@@ -602,8 +698,85 @@ function renderVisibleGraph() {
 		state.cy.add(cytoscapeElements);
 	});
 
+	updateSummary();
+	updateFilterControlStates();
+	setNotice(buildRenderNotice(getBaseLoadNotice()));
 	applyCollapsedState();
 	runLayout(false);
+}
+
+function computeFilteredGraphSnapshot() {
+	if (!state.payload) {
+		return {
+			visibleNodes: [],
+			visibleEdges: [],
+			renderedEdges: [],
+		};
+	}
+
+	const query = state.view.searchQuery.trim().toLowerCase();
+	const filteredNodes = state.payload.nodes.filter((node) => !state.view.hideVariables || node.type !== 'variable');
+	const allowedNodeIds = new Set(filteredNodes.map((node) => node.id));
+
+	let filteredEdges = state.payload.edges.filter((edge) => {
+		const edgeType = edge.edgeType || edge.relationship;
+		if (state.view.hideStructuralEdges && STRUCTURAL_EDGE_TYPES.has(edgeType)) {
+			return false;
+		}
+
+		return allowedNodeIds.has(edge.source) && allowedNodeIds.has(edge.target);
+	});
+
+	let visibleNodes = filteredNodes;
+	if (query) {
+		const matchedNodeIds = new Set(
+			filteredNodes
+				.filter((node) => matchesSearchQuery(node, query))
+				.map((node) => node.id)
+		);
+
+		if (matchedNodeIds.size === 0) {
+			visibleNodes = [];
+			filteredEdges = [];
+		} else {
+			const neighborhoodNodeIds = new Set(matchedNodeIds);
+			for (const edge of filteredEdges) {
+				if (matchedNodeIds.has(edge.source) || matchedNodeIds.has(edge.target)) {
+					neighborhoodNodeIds.add(edge.source);
+					neighborhoodNodeIds.add(edge.target);
+				}
+			}
+
+			visibleNodes = filteredNodes.filter((node) => neighborhoodNodeIds.has(node.id));
+			filteredEdges = filteredEdges.filter((edge) => neighborhoodNodeIds.has(edge.source) && neighborhoodNodeIds.has(edge.target));
+		}
+	}
+
+	const renderedEdges = prioritizeEdges(filteredEdges, state.view.edgeBudget);
+
+	return {
+		visibleNodes,
+		visibleEdges: filteredEdges,
+		renderedEdges,
+	};
+}
+
+function buildNodeDegreeMap(edges) {
+	const degreeByNodeId = new Map();
+
+	for (const edge of edges) {
+		degreeByNodeId.set(edge.source, (degreeByNodeId.get(edge.source) || 0) + 1);
+		degreeByNodeId.set(edge.target, (degreeByNodeId.get(edge.target) || 0) + 1);
+	}
+
+	return degreeByNodeId;
+}
+
+function matchesSearchQuery(node, query) {
+	const name = String(node.name || '').toLowerCase();
+	const filePath = String(node.filePath || '').toLowerCase();
+	const type = String(node.type || '').toLowerCase();
+	return name.includes(query) || filePath.includes(query) || type.includes(query);
 }
 
 function buildCompoundNodeDefinitions(nodes, edges) {
@@ -705,6 +878,7 @@ function runLayout(forceFit) {
 	const layout = state.cy.layout(layoutOptions);
 
 	layout.run();
+	applyAdaptiveDetailMode();
 }
 
 function applyCollapsedState() {
@@ -742,6 +916,7 @@ function applyTraceFocus(node) {
 
 	cy.elements().addClass('is-dimmed').removeClass('is-focused');
 	allFocused.removeClass('is-dimmed').addClass('is-focused');
+	applyAdaptiveDetailMode();
 }
 
 function clearTraceFocus() {
@@ -750,6 +925,7 @@ function clearTraceFocus() {
 	}
 
 	state.cy.elements().removeClass('is-dimmed is-focused');
+	applyAdaptiveDetailMode();
 }
 
 function prioritizeEdges(edges, maxEdges) {
@@ -766,15 +942,150 @@ function prioritizeEdges(edges, maxEdges) {
 		.slice(0, maxEdges);
 }
 
-function updateSummary(nodeCount, edgeCount) {
+function updateSummary() {
 	if (!elements.summary || !state.payload) {
 		return;
 	}
 
-	const visibleNodeCount = state.payload.nodes.length;
-	const visibleEdgeCount = state.payload.edges.length;
+	const visibleNodeCount = state.viewStats.visibleNodeCount;
+	const visibleEdgeCount = state.viewStats.visibleEdgeCount;
+	const renderedEdgeCount = state.viewStats.renderedEdgeCount;
+	const totalNodeCount = state.totals.totalNodeCount;
+	const totalEdgeCount = state.totals.totalEdgeCount;
 
-	elements.summary.textContent = `Nodes ${visibleNodeCount}/${nodeCount} | Edges ${visibleEdgeCount}/${edgeCount}`;
+	let text = `Nodes ${visibleNodeCount}/${totalNodeCount} | Edges ${visibleEdgeCount}/${totalEdgeCount}`;
+	if (renderedEdgeCount < visibleEdgeCount) {
+		text += ` | Rendered ${renderedEdgeCount}`;
+	}
+
+	if (state.view.searchQuery) {
+		text += ` | Search "${state.view.searchQuery}"`;
+	}
+
+	elements.summary.textContent = text;
+}
+
+function getBaseLoadNotice() {
+	if (state.loadState.canLoadMore) {
+		return 'Large graph detected. Use Load More to fetch additional nodes.';
+	}
+
+	if (state.loadState.wasTruncated) {
+		return 'All available nodes are loaded.';
+	}
+
+	return 'Graph loaded.';
+}
+
+function buildRenderNotice(baseMessage) {
+	const notes = [];
+
+	if (state.viewStats.truncatedByEdgeBudget) {
+		notes.push(`Edge budget rendered ${state.viewStats.renderedEdgeCount}/${state.viewStats.visibleEdgeCount}.`);
+	}
+
+	if (state.view.hideStructuralEdges) {
+		notes.push('Structural edges hidden.');
+	}
+
+	if (state.view.hideVariables) {
+		notes.push('Variables hidden.');
+	}
+
+	if (state.view.searchQuery) {
+		notes.push(`Search filter active for "${state.view.searchQuery}".`);
+	}
+
+	if (notes.length === 0) {
+		return baseMessage;
+	}
+
+	return `${baseMessage} ${notes.join(' ')}`;
+}
+
+function updateFilterControlStates() {
+	if (elements.toggleContainment) {
+		elements.toggleContainment.dataset.active = state.view.hideStructuralEdges ? 'true' : 'false';
+		elements.toggleContainment.textContent = state.view.hideStructuralEdges ? 'Structural Hidden' : 'Hide Structural Edges';
+	}
+
+	if (elements.toggleVariables) {
+		elements.toggleVariables.dataset.active = state.view.hideVariables ? 'true' : 'false';
+		elements.toggleVariables.textContent = state.view.hideVariables ? 'Variables Hidden' : 'Hide Variables';
+	}
+
+	if (elements.toggleSmartLabels) {
+		elements.toggleSmartLabels.dataset.active = state.view.smartLabels ? 'true' : 'false';
+		elements.toggleSmartLabels.textContent = `Smart Labels: ${state.view.smartLabels ? 'On' : 'Off'}`;
+	}
+
+	if (elements.edgeBudget) {
+		elements.edgeBudget.value = String(state.view.edgeBudget);
+	}
+
+	updateEdgeBudgetLabel();
+}
+
+function updateEdgeBudgetLabel() {
+	if (!elements.edgeBudgetValue) {
+		return;
+	}
+
+	elements.edgeBudgetValue.textContent = `${state.view.edgeBudget.toLocaleString()}`;
+}
+
+function resetClarityControls() {
+	state.view.edgeBudget = MAX_VISIBLE_EDGES;
+	state.view.hideStructuralEdges = false;
+	state.view.hideVariables = false;
+	state.view.smartLabels = true;
+	state.view.searchQuery = '';
+
+	if (elements.searchInput) {
+		elements.searchInput.value = '';
+	}
+
+	if (elements.edgeBudget) {
+		elements.edgeBudget.value = String(MAX_VISIBLE_EDGES);
+	}
+
+	updateFilterControlStates();
+}
+
+function applyAdaptiveDetailMode() {
+	if (!state.cy) {
+		return;
+	}
+
+	const cy = state.cy;
+	const nodes = cy.nodes();
+	const edges = cy.edges();
+
+	if (!state.view.smartLabels) {
+		nodes.removeClass('label-hidden');
+		edges.removeClass('edge-low-detail');
+		return;
+	}
+
+	const shouldReduceDetail = cy.zoom() < LOW_DETAIL_ZOOM_THRESHOLD && nodes.length > LOW_DETAIL_NODE_THRESHOLD;
+	if (!shouldReduceDetail) {
+		nodes.removeClass('label-hidden');
+		edges.removeClass('edge-low-detail');
+		return;
+	}
+
+	const emphasizedNodes = nodes
+		.filter((node) => node.isParent() || Number(node.data('degree') || 0) >= 8)
+		.union(cy.$('.is-focused').nodes());
+
+	nodes.addClass('label-hidden');
+	emphasizedNodes.removeClass('label-hidden');
+
+	if (edges.length > LOW_DETAIL_EDGE_THRESHOLD) {
+		edges.addClass('edge-low-detail');
+	} else {
+		edges.removeClass('edge-low-detail');
+	}
 }
 
 function updateLoadMoreButton() {

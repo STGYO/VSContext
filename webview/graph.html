@@ -26,6 +26,20 @@
     </header>
 
     <div id="notice" aria-live="polite"></div>
+    <section id="density-controls" aria-label="Graph clarity controls">
+      <label for="graph-search">Search</label>
+      <input id="graph-search" type="search" placeholder="Node or file name" spellcheck="false" />
+
+      <label for="edge-budget">Edge Budget</label>
+      <input id="edge-budget" type="range" min="1500" max="22000" step="500" value="22000" />
+      <span id="edge-budget-value" aria-live="polite">22000</span>
+
+      <button id="toggle-containment" type="button" data-active="false" title="Hide containment-only relationships">Hide Structural Edges</button>
+      <button id="toggle-variables" type="button" data-active="false" title="Hide variable nodes">Hide Variables</button>
+      <button id="toggle-smart-labels" type="button" data-active="true" title="Hide most labels when zoomed out">Smart Labels: On</button>
+      <button id="reset-filters" type="button" title="Reset all clarity controls">Reset</button>
+    </section>
+
     <section id="graph-shell">
       <main id="graph" role="application" aria-label="VSContext code graph"></main>
 
@@ -44,7 +58,7 @@
           <li><span class="legend-swatch" data-node-type="method"></span>Method</li>
           <li><span class="legend-swatch" data-node-type="variable"></span>Variable</li>
         </ul>
-        <p class="legend-help">Double-click a parent boundary to collapse or expand. Ctrl/Cmd+Click or Alt+Click opens code.</p>
+        <p class="legend-help">Double-click a parent boundary to collapse or expand. Ctrl/Cmd+Click or Alt+Click opens code. Use clarity controls to reduce noise in large graphs.</p>
       </aside>
 
       <div id="node-tooltip" role="tooltip" hidden></div>

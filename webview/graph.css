@@ -110,6 +110,58 @@ button:disabled:hover {
   color: var(--vscode-descriptionForeground);
 }
 
+#density-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 12px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-panel-border) 82%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-panel-background) 4%),
+      color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-panel-background) 10%)
+    );
+}
+
+#density-controls label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--vscode-descriptionForeground);
+}
+
+#density-controls input[type='search'] {
+  min-width: 180px;
+  max-width: 280px;
+  border: 1px solid var(--vscode-input-border);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border-radius: 7px;
+  font: inherit;
+  line-height: 1.2;
+  padding: 6px 8px;
+}
+
+#density-controls input[type='search']:focus-visible,
+#density-controls input[type='range']:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+#density-controls input[type='range'] {
+  width: 138px;
+}
+
+#edge-budget-value {
+  min-width: 58px;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: right;
+  color: var(--vscode-foreground);
+}
+
 #graph {
   position: relative;
   width: 100%;
@@ -245,5 +297,18 @@ button:disabled:hover {
     top: auto;
     bottom: 12px;
     right: 12px;
+  }
+
+  #density-controls {
+    gap: 7px;
+  }
+
+  #density-controls input[type='search'] {
+    min-width: 148px;
+    max-width: 48vw;
+  }
+
+  #density-controls input[type='range'] {
+    width: 118px;
   }
 }
