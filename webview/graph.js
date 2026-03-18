@@ -1070,6 +1070,12 @@ function updateEdgeBudgetLabel() {
 }
 
 function resetClarityControls() {
+	// Cancel any pending debounced search so it doesn't run after reset
+	if (state.searchDebounceHandle) {
+		clearTimeout(state.searchDebounceHandle);
+		state.searchDebounceHandle = undefined;
+	}
+
 	state.view.edgeBudget = MAX_VISIBLE_EDGES;
 	state.view.hideStructuralEdges = false;
 	state.view.hideVariables = false;
