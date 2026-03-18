@@ -308,7 +308,6 @@ function applyGraphPayload(payload, envelope) {
 	renderVisibleGraph();
 	updateLoadMoreButton();
 	updateZoomLevel(state.cy.zoom());
-	setNotice(buildRenderNotice(getBaseLoadNotice()));
 }
 
 function appendGraphPayload(payload, envelope) {
