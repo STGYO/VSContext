@@ -217,6 +217,16 @@ if (elements.edgeBudget) {
 
 		state.view.edgeBudget = clamp(Math.round(nextValue), MIN_EDGE_BUDGET, MAX_VISIBLE_EDGES);
 		updateEdgeBudgetLabel();
+	});
+
+	elements.edgeBudget.addEventListener('change', () => {
+		const nextValue = Number(elements.edgeBudget.value);
+		if (!Number.isFinite(nextValue)) {
+			return;
+		}
+
+		state.view.edgeBudget = clamp(Math.round(nextValue), MIN_EDGE_BUDGET, MAX_VISIBLE_EDGES);
+		updateEdgeBudgetLabel();
 		renderVisibleGraph();
 	});
 }
