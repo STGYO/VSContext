@@ -13,6 +13,32 @@ const LOW_DETAIL_ZOOM_THRESHOLD = 0.52;
 const LOW_DETAIL_NODE_THRESHOLD = 180;
 const LOW_DETAIL_EDGE_THRESHOLD = 420;
 
+let adaptiveDetailRafId = null;
+let pendingAdaptiveDetailZoomLevel = null;
+
+function scheduleAdaptiveDetailMode(zoomLevel) {
+	pendingAdaptiveDetailZoomLevel = zoomLevel;
+
+	if (adaptiveDetailRafId !== null) {
+		return;
+	}
+
+	adaptiveDetailRafId = (typeof requestAnimationFrame === 'function'
+		? requestAnimationFrame
+		: (cb) => setTimeout(cb, 16))(() => {
+		adaptiveDetailRafId = null;
+
+		if (pendingAdaptiveDetailZoomLevel == null) {
+			return;
+		}
+
+		updateZoomLevel(pendingAdaptiveDetailZoomLevel);
+		applyAdaptiveDetailMode();
+
+		pendingAdaptiveDetailZoomLevel = null;
+	});
+}
+
 const STRUCTURAL_EDGE_TYPES = new Set([
 	'file-class',
 	'file-function',
@@ -641,8 +667,7 @@ function wireInteractions(cy) {
 	});
 
 	cy.on('zoom', () => {
-		updateZoomLevel(cy.zoom());
-		applyAdaptiveDetailMode();
+		scheduleAdaptiveDetailMode(cy.zoom());
 		hideTooltip();
 	});
 
