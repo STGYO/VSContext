@@ -15,6 +15,10 @@
         <p id="summary">Waiting for graph data...</p>
       </div>
       <div class="toolbar-right">
+        <button id="view-toggle" type="button">View: Mind Map</button>
+        <button id="direction-toggle" type="button">Direction: TB</button>
+        <button id="collapse-all" type="button">Collapse Groups</button>
+        <button id="expand-all" type="button">Expand Groups</button>
         <button id="fit-view" type="button">Fit</button>
         <button id="relayout" type="button">Relayout</button>
         <button id="load-more" type="button">Load More</button>
@@ -34,17 +38,22 @@
       <aside id="legend" aria-label="Graph legend">
         <h3>Legend</h3>
         <ul>
-          <li><span class="legend-swatch" data-node-type="file"></span>File</li>
-          <li><span class="legend-swatch" data-node-type="class"></span>Class</li>
+          <li><span class="legend-swatch" data-node-type="file"></span>File Scope</li>
+          <li><span class="legend-swatch" data-node-type="class"></span>Class Scope</li>
           <li><span class="legend-swatch" data-node-type="function"></span>Function</li>
           <li><span class="legend-swatch" data-node-type="method"></span>Method</li>
           <li><span class="legend-swatch" data-node-type="variable"></span>Variable</li>
         </ul>
+        <p class="legend-help">Double-click a parent boundary to collapse or expand. Ctrl/Cmd+Click or Alt+Click opens code.</p>
       </aside>
+
+      <div id="node-tooltip" role="tooltip" hidden></div>
     </section>
   </div>
 
   <script nonce="{{nonce}}" src="{{cytoscapeUri}}"></script>
+  <script nonce="{{nonce}}" src="{{dagreUri}}"></script>
+  <script nonce="{{nonce}}" src="{{cytoscapeDagreUri}}"></script>
   <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
 </body>
 </html>
