@@ -7,6 +7,13 @@ export interface ResolveSymbolOptions {
   readonly isIndexing: boolean;
 }
 
+interface SymbolQuickPickItem extends vscode.QuickPickItem {
+  readonly nodeId: string;
+}
+
+const OPEN_EXPLORER_ACTION = 'Open VSContext Explorer';
+const PICK_INDEXED_SYMBOL_ACTION = 'Choose Indexed Symbol';
+
 export async function resolveSelectedSymbol(
   graph: WorkspaceGraph,
   explicitNodeId?: string,
@@ -18,7 +25,25 @@ export async function resolveSelectedSymbol(
 
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
-    void vscode.window.showWarningMessage('Open a file and place the cursor inside a function or method.');
+    const action = await vscode.window.showWarningMessage(
+      'Open a file and place the cursor inside a function or method.',
+      OPEN_EXPLORER_ACTION,
+      PICK_INDEXED_SYMBOL_ACTION,
+    );
+
+    if (action === OPEN_EXPLORER_ACTION) {
+      await vscode.commands.executeCommand('workbench.view.extension.vscontextExplorer');
+      return undefined;
+    }
+
+    if (action === PICK_INDEXED_SYMBOL_ACTION) {
+      return promptForSymbolSelection(
+        [...graph.nodes.values()],
+        'Select a symbol from indexed workspace',
+        true,
+      );
+    }
+
     return undefined;
   }
 
@@ -47,18 +72,70 @@ export async function resolveSelectedSymbol(
       return undefined;
     }
 
-    void vscode.window.showWarningMessage('No function symbols were found in the current file.');
+    const action = await vscode.window.showWarningMessage(
+      'No function symbols were found in the current file.',
+      PICK_INDEXED_SYMBOL_ACTION,
+    );
+
+    if (action === PICK_INDEXED_SYMBOL_ACTION) {
+      return promptForSymbolSelection(
+        [...graph.nodes.values()],
+        'Select a symbol from indexed workspace',
+        true,
+      );
+    }
+
     return undefined;
   }
 
-  const picked = await vscode.window.showQuickPick(
-    fileNodes.map((node) => ({
-      label: node.symbolName,
-      description: `${node.filePath}:${node.lineNumber}`,
-      nodeId: node.id,
-    })),
+  return promptForSymbolSelection(
+    fileNodes,
+    'Select a function or method to analyze',
+    false,
+  );
+}
+
+async function promptForSymbolSelection(
+  nodes: GraphNode[],
+  placeHolder: string,
+  includeFilePathInDescription: boolean,
+): Promise<GraphNode | undefined> {
+  if (nodes.length === 0) {
+    return undefined;
+  }
+
+  const sortedNodes = [...nodes].sort((left, right) => {
+    if (left.filePath !== right.filePath) {
+      return left.filePath.localeCompare(right.filePath);
+    }
+
+    if (left.lineNumber !== right.lineNumber) {
+      return left.lineNumber - right.lineNumber;
+    }
+
+    return left.symbolName.localeCompare(right.symbolName);
+  });
+
+  const picked = await vscode.window.showQuickPick<SymbolQuickPickItem>(
+    sortedNodes.map((node) => {
+      const symbolName = node.symbolName && node.symbolName.trim().length > 0
+        ? node.symbolName
+        : 'Unknown Symbol';
+      const locationLabel = includeFilePathInDescription
+        ? `${node.filePath}:${node.lineNumber}`
+        : `Line ${node.lineNumber}`;
+
+      return {
+        label: symbolName,
+        description: locationLabel,
+        detail: `${toSymbolKindLabel(node.symbolKind)} - lines ${node.rangeStartLine}-${node.rangeEndLine}`,
+        nodeId: node.id,
+      };
+    }),
     {
-      placeHolder: 'Select a function or method to analyze',
+      placeHolder,
+      matchOnDescription: true,
+      matchOnDetail: true,
     },
   );
 
@@ -66,7 +143,12 @@ export async function resolveSelectedSymbol(
     return undefined;
   }
 
-  return graph.nodes.get(picked.nodeId);
+  return nodes.find((node) => node.id === picked.nodeId);
+}
+
+function toSymbolKindLabel(kind: vscode.SymbolKind): string {
+  const labels = vscode.SymbolKind as unknown as Record<number, string>;
+  return labels[kind] ?? 'Symbol';
 }
 
 export async function openGraphNodeInEditor(node: GraphNode): Promise<void> {

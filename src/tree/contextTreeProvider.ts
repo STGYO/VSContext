@@ -5,16 +5,19 @@ import { Logger } from '../utils/logger';
 
 class VSContextTreeItem extends vscode.TreeItem {
   public readonly children: VSContextTreeItem[];
+  public readonly nodeId?: string;
 
   public constructor(
     label: string,
     collapsibleState: vscode.TreeItemCollapsibleState,
     id: string,
     children: VSContextTreeItem[] = [],
+    nodeId?: string,
   ) {
     super(label || 'Unnamed Item', collapsibleState);
     this.id = id || `item:${Date.now().toString()}`;
     this.children = children;
+    this.nodeId = nodeId;
   }
 }
 
@@ -123,7 +126,7 @@ export class ContextTreeProvider implements vscode.TreeDataProvider<VSContextTre
 
       const groupedChildren: VSContextTreeItem[] = [
         new VSContextTreeItem(
-          'Functions',
+          this.withCount('Functions', functionItems.length),
           vscode.TreeItemCollapsibleState.Collapsed,
           `vscontext:file:${filePath}:functions`,
           functionItems.length > 0
@@ -131,7 +134,7 @@ export class ContextTreeProvider implements vscode.TreeDataProvider<VSContextTre
             : [new VSContextTreeItem('No functions', vscode.TreeItemCollapsibleState.None, `vscontext:file:${filePath}:functions:empty`)],
         ),
         new VSContextTreeItem(
-          'Methods',
+          this.withCount('Methods', methodItems.length),
           vscode.TreeItemCollapsibleState.Collapsed,
           `vscontext:file:${filePath}:methods`,
           methodItems.length > 0
@@ -139,7 +142,7 @@ export class ContextTreeProvider implements vscode.TreeDataProvider<VSContextTre
             : [new VSContextTreeItem('No methods', vscode.TreeItemCollapsibleState.None, `vscontext:file:${filePath}:methods:empty`)],
         ),
         new VSContextTreeItem(
-          'Classes',
+          this.withCount('Classes', classItems.length),
           vscode.TreeItemCollapsibleState.Collapsed,
           `vscontext:file:${filePath}:classes`,
           classItems.length > 0
@@ -147,7 +150,7 @@ export class ContextTreeProvider implements vscode.TreeDataProvider<VSContextTre
             : [new VSContextTreeItem('No classes', vscode.TreeItemCollapsibleState.None, `vscontext:file:${filePath}:classes:empty`)],
         ),
         new VSContextTreeItem(
-          'Variables',
+          this.withCount('Variables', constantItems.length + fieldItems.length + localVariableItems.length),
           vscode.TreeItemCollapsibleState.Collapsed,
           `vscontext:file:${filePath}:variables`,
           this.buildVariableGroupChildren(
@@ -185,8 +188,10 @@ export class ContextTreeProvider implements vscode.TreeDataProvider<VSContextTre
     }
 
     const filesNode = new VSContextTreeItem(
-      'Files',
-      vscode.TreeItemCollapsibleState.Expanded,
+      this.withCount('Files', fileItems.filter((item) => item.id?.startsWith('vscontext:file:') && !item.id?.endsWith(':empty')).length),
+      fileItems.length > 25
+        ? vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.Expanded,
       'vscontext:files',
       fileItems,
     );
@@ -201,6 +206,8 @@ export class ContextTreeProvider implements vscode.TreeDataProvider<VSContextTre
       appendCallSuffix ? `${baseLabel}()` : baseLabel,
       vscode.TreeItemCollapsibleState.None,
       `vscontext:symbol:${node.id}`,
+      [],
+      node.id,
     );
 
     item.description = `Line ${node.lineNumber}`;
@@ -316,15 +323,15 @@ export class ContextTreeProvider implements vscode.TreeDataProvider<VSContextTre
     );
 
     const symbolsNode = new VSContextTreeItem(
-      'Symbols',
+      this.withCount('Symbols', allNodes.length),
       vscode.TreeItemCollapsibleState.Collapsed,
       'vscontext:symbols',
       [
-        this.createSymbolCategoryItem('Classes', 'vscontext:symbols:classes', classItems, 'symbol-class', 'No classes'),
-        this.createSymbolCategoryItem('Functions', 'vscontext:symbols:functions', functionItems, 'symbol-function', 'No functions'),
-        this.createSymbolCategoryItem('Methods', 'vscontext:symbols:methods', methodItems, 'symbol-method', 'No methods'),
+        this.createSymbolCategoryItem(this.withCount('Classes', classItems.length), 'vscontext:symbols:classes', classItems, 'symbol-class', 'No classes'),
+        this.createSymbolCategoryItem(this.withCount('Functions', functionItems.length), 'vscontext:symbols:functions', functionItems, 'symbol-function', 'No functions'),
+        this.createSymbolCategoryItem(this.withCount('Methods', methodItems.length), 'vscontext:symbols:methods', methodItems, 'symbol-method', 'No methods'),
         new VSContextTreeItem(
-          'Variables',
+          this.withCount('Variables', constantItems.length + fieldItems.length + localVariableItems.length),
           vscode.TreeItemCollapsibleState.Collapsed,
           'vscontext:symbols:variables',
           variableChildren,
@@ -344,10 +351,14 @@ export class ContextTreeProvider implements vscode.TreeDataProvider<VSContextTre
     localVariableItems: VSContextTreeItem[],
   ): VSContextTreeItem[] {
     return [
-      this.createSymbolCategoryItem('Constants', `${parentId}:constants`, constantItems, 'symbol-constant', 'No constants'),
-      this.createSymbolCategoryItem('Fields', `${parentId}:fields`, fieldItems, 'symbol-field', 'No fields'),
-      this.createSymbolCategoryItem('Locals', `${parentId}:locals`, localVariableItems, 'symbol-variable', 'No local variables'),
+      this.createSymbolCategoryItem(this.withCount('Constants', constantItems.length), `${parentId}:constants`, constantItems, 'symbol-constant', 'No constants'),
+      this.createSymbolCategoryItem(this.withCount('Fields', fieldItems.length), `${parentId}:fields`, fieldItems, 'symbol-field', 'No fields'),
+      this.createSymbolCategoryItem(this.withCount('Locals', localVariableItems.length), `${parentId}:locals`, localVariableItems, 'symbol-variable', 'No local variables'),
     ];
+  }
+
+  private withCount(label: string, count: number): string {
+    return `${label} (${count})`;
   }
 
   private createSymbolCategoryItem(

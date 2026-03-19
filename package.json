@@ -2,7 +2,7 @@
   "name": "vscontext",
   "displayName": "VSContext",
   "description": "A stable VS Code extension for workspace symbol graphing, execution tracing, and impact analysis.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "ShriSrimoyTrivedy",
   "icon": "icon.png",
   "license": "MIT",
@@ -90,6 +90,18 @@
           "when": "view == vscontext.explorer",
           "group": "navigation@3"
         }
+      ],
+      "view/item/context": [
+        {
+          "command": "vscontext.traceExecution",
+          "when": "view == vscontext.explorer && (viewItem == vscontext.method || viewItem == vscontext.class || viewItem == vscontext.variable)",
+          "group": "inline@1"
+        },
+        {
+          "command": "vscontext.findImpact",
+          "when": "view == vscontext.explorer && (viewItem == vscontext.method || viewItem == vscontext.class || viewItem == vscontext.variable)",
+          "group": "inline@2"
+        }
       ]
     },
     "configuration": {
@@ -129,7 +141,7 @@
         },
         "vscontext.debugSymbolDetection": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Enable verbose symbol extraction, graph node creation, and tree node creation diagnostics in the VSContext output channel."
         }
       }

@@ -18,6 +18,12 @@ interface RequestLoadMoreMessage {
   readonly type: 'requestLoadMore';
 }
 
+interface OpenNodeResultMessage {
+  readonly type: 'openNodeResult';
+  readonly status: 'success' | 'error';
+  readonly message?: string;
+}
+
 interface GraphLoadState {
   readonly remainingCount: number;
   readonly canLoadMore: boolean;
@@ -101,8 +107,17 @@ export async function openGraphWebviewPanel(
 
       try {
         await onOpenNode(message.target);
+        await postOpenNodeResult(graphPanel.webview, {
+          type: 'openNodeResult',
+          status: 'success',
+        });
       } catch (error) {
         logger.error('Failed to open node from code graph panel.', error);
+        await postOpenNodeResult(graphPanel.webview, {
+          type: 'openNodeResult',
+          status: 'error',
+          message: error instanceof Error ? error.message : 'Unable to open selected symbol.',
+        });
       }
     }),
     graphPanel.onDidDispose(() => {
@@ -197,6 +212,10 @@ async function postNextGraphChunk(webview: vscode.Webview): Promise<void> {
     totals: graphSession.totals,
     appendedNodeCount: nextNodes.length,
   });
+}
+
+async function postOpenNodeResult(webview: vscode.Webview, result: OpenNodeResultMessage): Promise<void> {
+  await webview.postMessage(result);
 }
 
 function buildVisiblePayload(session: WebviewGraphSession): CodeGraphPayload {
@@ -328,18 +347,69 @@ function fallbackTemplate(): string {
         <p id="summary">Waiting for graph data...</p>
       </div>
       <div class="toolbar-right">
-        <button id="view-toggle" type="button">View: Mind Map</button>
-        <button id="direction-toggle" type="button">Direction: TB</button>
-        <button id="collapse-all" type="button">Collapse Groups</button>
-        <button id="expand-all" type="button">Expand Groups</button>
-        <button id="fit-view" type="button">Fit</button>
-        <button id="relayout" type="button">Relayout</button>
-        <button id="load-more" type="button">Load More</button>
+        <button
+          id="menu-toggle"
+          type="button"
+          aria-haspopup="true"
+          aria-expanded="false"
+          aria-controls="overflow-menu"
+          title="Graph controls"
+          aria-label="Open graph controls menu"
+        >
+          ...
+        </button>
+        <button
+          id="top-bars-toggle"
+          type="button"
+          aria-expanded="true"
+          aria-controls="notice density-controls"
+          title="Hide top bars"
+          aria-label="Hide top bars"
+        >
+          &#9650;
+        </button>
+        <div id="overflow-menu" class="overflow-menu" aria-label="Graph controls" hidden>
+          <div class="menu-group" role="group" aria-label="Layout controls">
+            <p class="menu-heading">Layout</p>
+            <button id="view-toggle" type="button">View: Mind Map</button>
+            <button id="direction-toggle" type="button">Direction: TB</button>
+            <button id="collapse-all" type="button">Collapse Groups</button>
+            <button id="expand-all" type="button">Expand Groups</button>
+            <button id="fit-view" type="button">Fit</button>
+            <button id="relayout" type="button">Relayout</button>
+            <button id="load-more" type="button">Load More</button>
+          </div>
+
+          <div class="menu-group" role="group" aria-label="Visibility filters">
+            <p class="menu-heading">Visibility</p>
+            <button id="toggle-containment" type="button" data-active="false" title="Hide containment-only relationships">Hide Structural Edges</button>
+            <button id="toggle-variables" type="button" data-active="false" title="Hide variable nodes">Hide Variables</button>
+            <button id="toggle-smart-labels" type="button" data-active="true" title="Hide most labels when zoomed out">Smart Labels: On</button>
+          </div>
+
+          <div class="menu-group" role="group" aria-label="Edge type filters">
+            <p class="menu-heading">Edge Types</p>
+            <button id="toggle-edge-calls" type="button" data-active="true" title="Toggle calls edges">Calls: On</button>
+            <button id="toggle-edge-implements" type="button" data-active="true" title="Toggle implements edges">Implements: On</button>
+            <button id="toggle-edge-reads" type="button" data-active="true" title="Toggle reads edges">Reads: On</button>
+            <button id="toggle-edge-writes" type="button" data-active="true" title="Toggle writes edges">Writes: On</button>
+            <button id="toggle-edge-file-dependency" type="button" data-active="true" title="Toggle file dependency edges">File Deps: On</button>
+            <button id="reset-filters" type="button" title="Reset all clarity controls">Reset</button>
+          </div>
+        </div>
       </div>
     </header>
     <div id="notice" aria-live="polite"></div>
+    <section id="density-controls" aria-label="Graph clarity controls">
+      <label for="graph-search">Search</label>
+      <input id="graph-search" type="search" placeholder="Node or file name" spellcheck="false" />
+
+      <label for="edge-budget">Edge Budget</label>
+      <input id="edge-budget" type="range" min="1500" max="22000" step="500" value="22000" />
+      <span id="edge-budget-value" aria-live="polite">22000</span>
+    </section>
     <section id="graph-shell">
-      <main id="graph" role="application" aria-label="VSContext code graph"></main>
+      <main id="graph" role="region" tabindex="0" aria-label="VSContext code graph canvas"></main>
       <div id="zoom-controls" aria-label="Graph zoom controls">
         <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
         <span id="zoom-level" aria-live="polite">100%</span>
@@ -354,7 +424,7 @@ function fallbackTemplate(): string {
           <li><span class="legend-swatch" data-node-type="method"></span>Method</li>
           <li><span class="legend-swatch" data-node-type="variable"></span>Variable</li>
         </ul>
-        <p class="legend-help">Double-click a parent boundary to collapse or expand. Ctrl/Cmd+Click or Alt+Click opens code.</p>
+        <p class="legend-help">Double-click a parent boundary to collapse or expand. Ctrl/Cmd+Click or Alt+Click opens code. Keyboard: arrows move focus, Enter opens, +/- zoom, F fit, V view mode, D direction, / search.</p>
       </aside>
       <div id="node-tooltip" role="tooltip" hidden></div>
     </section>

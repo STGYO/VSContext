@@ -6,8 +6,31 @@ const MAX_VISIBLE_EDGES = 22000;
 const MIN_EDGE_BUDGET = 1500;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 5;
-const ZOOM_STEP_FACTOR = 1.1;
-const ZOOM_ANIMATION_MS = 180;
+const ZOOM_LEVEL_STOPS = [
+	0.1,
+	0.125,
+	0.15,
+	0.2,
+	0.25,
+	0.33,
+	0.5,
+	0.67,
+	0.75,
+	0.9,
+	1,
+	1.1,
+	1.25,
+	1.5,
+	1.75,
+	2,
+	2.5,
+	3,
+	4,
+	5,
+];
+const WHEEL_ZOOM_SPEED = 0.0024;
+const WHEEL_ZOOM_MAX_DELTA = 900;
+const WHEEL_LINE_HEIGHT_PX = 16;
 const SEARCH_INPUT_DEBOUNCE_MS = 150;
 const LOW_DETAIL_ZOOM_THRESHOLD = 0.52;
 const LOW_DETAIL_NODE_THRESHOLD = 180;
@@ -79,6 +102,7 @@ const state = {
 	layoutDirection: 'TB',
 	layoutMode: 'mindmap',
 	dagreRegistered: false,
+	topBarsVisible: true,
 	theme: undefined,
 	loadState: {
 		remainingCount: 0,
@@ -95,6 +119,13 @@ const state = {
 		hideVariables: false,
 		smartLabels: true,
 		searchQuery: '',
+		edgeVisibility: {
+			calls: true,
+			implements: true,
+			reads: true,
+			writes: true,
+			'file-dependency': true,
+		},
 	},
 	viewStats: {
 		visibleNodeCount: 0,
@@ -102,19 +133,30 @@ const state = {
 		renderedEdgeCount: 0,
 		truncatedByEdgeBudget: false,
 	},
+	keyboardNodeId: '',
 	searchDebounceHandle: undefined,
 };
 
 const elements = {
+	app: document.getElementById('app'),
 	graph: document.getElementById('graph'),
 	summary: document.getElementById('summary'),
+	menuToggle: document.getElementById('menu-toggle'),
+	topBarsToggle: document.getElementById('top-bars-toggle'),
+	overflowMenu: document.getElementById('overflow-menu'),
 	notice: document.getElementById('notice'),
+	densityControls: document.getElementById('density-controls'),
 	searchInput: document.getElementById('graph-search'),
 	edgeBudget: document.getElementById('edge-budget'),
 	edgeBudgetValue: document.getElementById('edge-budget-value'),
 	toggleContainment: document.getElementById('toggle-containment'),
 	toggleVariables: document.getElementById('toggle-variables'),
 	toggleSmartLabels: document.getElementById('toggle-smart-labels'),
+	toggleEdgeCalls: document.getElementById('toggle-edge-calls'),
+	toggleEdgeImplements: document.getElementById('toggle-edge-implements'),
+	toggleEdgeReads: document.getElementById('toggle-edge-reads'),
+	toggleEdgeWrites: document.getElementById('toggle-edge-writes'),
+	toggleEdgeFileDependency: document.getElementById('toggle-edge-file-dependency'),
 	resetFilters: document.getElementById('reset-filters'),
 	viewToggle: document.getElementById('view-toggle'),
 	fitView: document.getElementById('fit-view'),
@@ -132,7 +174,12 @@ const elements = {
 
 window.addEventListener('message', (event) => {
 	const message = event.data;
-	if (!message || (message.type !== 'setGraphData' && message.type !== 'appendGraphData')) {
+	if (!message || (message.type !== 'setGraphData' && message.type !== 'appendGraphData' && message.type !== 'openNodeResult')) {
+		return;
+	}
+
+	if (message.type === 'openNodeResult') {
+		handleOpenNodeResult(message);
 		return;
 	}
 
@@ -164,6 +211,14 @@ bindClick(elements.loadMore, () => {
 	elements.loadMore.disabled = true;
 	elements.loadMore.textContent = 'Loading...';
 	vscode.postMessage({ type: 'requestLoadMore' });
+});
+
+bindClick(elements.menuToggle, () => {
+	toggleOverflowMenu();
+});
+
+bindClick(elements.topBarsToggle, () => {
+	toggleTopBarsVisibility();
 });
 
 bindClick(elements.zoomIn, () => {
@@ -229,6 +284,26 @@ bindClick(elements.toggleSmartLabels, () => {
 	applyAdaptiveDetailMode();
 });
 
+bindClick(elements.toggleEdgeCalls, () => {
+	toggleEdgeVisibility('calls');
+});
+
+bindClick(elements.toggleEdgeImplements, () => {
+	toggleEdgeVisibility('implements');
+});
+
+bindClick(elements.toggleEdgeReads, () => {
+	toggleEdgeVisibility('reads');
+});
+
+bindClick(elements.toggleEdgeWrites, () => {
+	toggleEdgeVisibility('writes');
+});
+
+bindClick(elements.toggleEdgeFileDependency, () => {
+	toggleEdgeVisibility('file-dependency');
+});
+
 bindClick(elements.resetFilters, () => {
 	resetClarityControls();
 	renderVisibleGraph();
@@ -274,6 +349,9 @@ resetClarityControls();
 updateFilterControlStates();
 updateViewToggleButton();
 updateDirectionButton();
+bindOverflowMenuInteractions();
+initKeyboardInteractions();
+updateTopBarsToggleState();
 vscode.postMessage({ type: 'ready' });
 
 function applyGraphPayload(payload, envelope) {
@@ -600,6 +678,10 @@ function createGraphInstance() {
 		cy.zoomingEnabled(true);
 	}
 
+	if (cy.userZoomingEnabled()) {
+		cy.userZoomingEnabled(false);
+	}
+
 	return cy;
 }
 
@@ -610,23 +692,14 @@ function wireInteractions(cy) {
 		const originalEvent = event.originalEvent;
 		const isModifiedOpen = Boolean(originalEvent && (originalEvent.ctrlKey || originalEvent.metaKey || originalEvent.altKey));
 
+		state.keyboardNodeId = node.id();
 		applyTraceFocus(node);
 
 		if (!isModifiedOpen || !data.uriString) {
 			return;
 		}
 
-		vscode.postMessage({
-			type: 'openNode',
-			target: {
-				uriString: data.uriString,
-				line: data.line,
-				rangeStartLine: data.rangeStartLine,
-				rangeStartCharacter: data.rangeStartCharacter,
-				rangeEndLine: data.rangeEndLine,
-				rangeEndCharacter: data.rangeEndCharacter,
-			},
-		});
+		postOpenNodeTarget(data);
 	});
 
 	cy.on('dbltap', 'node:parent', (event) => {
@@ -662,6 +735,7 @@ function wireInteractions(cy) {
 		if (event.target === cy) {
 			clearTraceFocus();
 			hideTooltip();
+			state.keyboardNodeId = '';
 		}
 	});
 
@@ -673,6 +747,225 @@ function wireInteractions(cy) {
 	cy.on('pan', () => {
 		hideTooltip();
 	});
+
+	bindWheelZoomBehavior();
+}
+
+function initKeyboardInteractions() {
+	if (!elements.graph) {
+		return;
+	}
+
+	elements.graph.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown ArrowLeft ArrowRight Enter Space / + - F V D L Escape');
+
+	elements.graph.addEventListener('keydown', (event) => {
+		if (!state.cy) {
+			return;
+		}
+
+		const key = event.key;
+		const lowerKey = key.toLowerCase();
+		const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
+		if (hasModifier) {
+			return;
+		}
+
+		if (lowerKey === '/') {
+			event.preventDefault();
+			if (elements.searchInput) {
+				elements.searchInput.focus();
+				elements.searchInput.select();
+			}
+			return;
+		}
+
+		if (lowerKey === 'f') {
+			event.preventDefault();
+			if (state.cy) {
+				state.cy.fit(undefined, 50);
+			}
+			return;
+		}
+
+		if (lowerKey === 'v') {
+			event.preventDefault();
+			if (elements.viewToggle) {
+				elements.viewToggle.click();
+			}
+			return;
+		}
+
+		if (lowerKey === 'd') {
+			event.preventDefault();
+			if (elements.directionToggle && !elements.directionToggle.disabled) {
+				elements.directionToggle.click();
+			}
+			return;
+		}
+
+		if (lowerKey === 'l') {
+			event.preventDefault();
+			if (elements.loadMore && !elements.loadMore.disabled) {
+				elements.loadMore.click();
+			}
+			return;
+		}
+
+		if (key === '+' || key === '=') {
+			event.preventDefault();
+			applyZoomStep(1);
+			return;
+		}
+
+		if (key === '-' || key === '_') {
+			event.preventDefault();
+			applyZoomStep(-1);
+			return;
+		}
+
+		if (key === 'Escape') {
+			event.preventDefault();
+			clearTraceFocus();
+			hideTooltip();
+			state.keyboardNodeId = '';
+			return;
+		}
+
+		if (key === 'Enter' || key === ' ') {
+			event.preventDefault();
+			activateKeyboardFocusedNode();
+			return;
+		}
+
+		if (key.startsWith('Arrow')) {
+			event.preventDefault();
+			moveKeyboardFocusByDirection(key);
+		}
+	});
+}
+
+function postOpenNodeTarget(nodeData) {
+	if (!nodeData || !nodeData.uriString) {
+		setNotice('Unable to open symbol location for this node.');
+		return;
+	}
+
+	setNotice('Opening symbol in editor...');
+
+	vscode.postMessage({
+		type: 'openNode',
+		target: {
+			uriString: nodeData.uriString,
+			line: nodeData.line,
+			rangeStartLine: nodeData.rangeStartLine,
+			rangeStartCharacter: nodeData.rangeStartCharacter,
+			rangeEndLine: nodeData.rangeEndLine,
+			rangeEndCharacter: nodeData.rangeEndCharacter,
+		},
+	});
+}
+
+function handleOpenNodeResult(message) {
+	if (!message || typeof message !== 'object') {
+		return;
+	}
+
+	if (message.status === 'success') {
+		setNotice('Opened symbol in editor.');
+		return;
+	}
+
+	const errorMessage = typeof message.message === 'string' && message.message.trim().length > 0
+		? message.message.trim()
+		: 'Unable to open selected symbol.';
+	setNotice(errorMessage);
+}
+
+function activateKeyboardFocusedNode() {
+	if (!state.cy) {
+		return;
+	}
+
+	let node = state.keyboardNodeId ? state.cy.getElementById(state.keyboardNodeId) : undefined;
+	if (!node || !node.isNode || !node.isNode()) {
+		node = state.cy.nodes(':visible').first();
+	}
+
+	if (!node || !node.isNode || !node.isNode()) {
+		return;
+	}
+
+	state.keyboardNodeId = node.id();
+	applyTraceFocus(node);
+	postOpenNodeTarget(node.data());
+}
+
+function moveKeyboardFocusByDirection(directionKey) {
+	if (!state.cy) {
+		return;
+	}
+
+	const visibleNodes = state.cy.nodes(':visible').filter((node) => !node.hasClass('compound-collapsed-hidden'));
+	if (visibleNodes.length === 0) {
+		return;
+	}
+
+	let current = state.keyboardNodeId ? state.cy.getElementById(state.keyboardNodeId) : undefined;
+	if (!current || !current.isNode || !current.isNode() || !current.visible()) {
+		current = visibleNodes.first();
+		state.keyboardNodeId = current.id();
+		applyTraceFocus(current);
+		return;
+	}
+
+	const currentPosition = current.position();
+	let bestCandidate;
+	let bestScore = Number.POSITIVE_INFINITY;
+
+	visibleNodes.forEach((candidate) => {
+		if (candidate.id() === current.id()) {
+			return;
+		}
+
+		const position = candidate.position();
+		const dx = position.x - currentPosition.x;
+		const dy = position.y - currentPosition.y;
+
+		if (directionKey === 'ArrowRight' && dx <= 0) {
+			return;
+		}
+		if (directionKey === 'ArrowLeft' && dx >= 0) {
+			return;
+		}
+		if (directionKey === 'ArrowDown' && dy <= 0) {
+			return;
+		}
+		if (directionKey === 'ArrowUp' && dy >= 0) {
+			return;
+		}
+
+		const primaryDistance = (directionKey === 'ArrowLeft' || directionKey === 'ArrowRight') ? Math.abs(dx) : Math.abs(dy);
+		const secondaryDistance = (directionKey === 'ArrowLeft' || directionKey === 'ArrowRight') ? Math.abs(dy) : Math.abs(dx);
+		const score = (primaryDistance * 4) + secondaryDistance;
+
+		if (score < bestScore) {
+			bestScore = score;
+			bestCandidate = candidate;
+		}
+	});
+
+	if (!bestCandidate) {
+		return;
+	}
+
+	state.keyboardNodeId = bestCandidate.id();
+	applyTraceFocus(bestCandidate);
+	if (state.cy) {
+		state.cy.animate({
+			center: { eles: bestCandidate },
+			duration: 120,
+		});
+	}
 }
 
 function renderVisibleGraph() {
@@ -736,6 +1029,7 @@ function renderVisibleGraph() {
 	updateFilterControlStates();
 	setNotice(buildRenderNotice(getBaseLoadNotice()));
 	applyCollapsedState();
+	ensureKeyboardFocusNode();
 	runLayout(false);
 }
 
@@ -754,6 +1048,10 @@ function computeFilteredGraphSnapshot() {
 
 	let filteredEdges = state.payload.edges.filter((edge) => {
 		const edgeType = edge.edgeType || edge.relationship;
+		if (Object.prototype.hasOwnProperty.call(state.view.edgeVisibility, edgeType) && !state.view.edgeVisibility[edgeType]) {
+			return false;
+		}
+
 		if (state.view.hideStructuralEdges && STRUCTURAL_EDGE_TYPES.has(edgeType)) {
 			return false;
 		}
@@ -1030,6 +1328,13 @@ function buildRenderNotice(baseMessage) {
 		notes.push(`Search filter active for "${state.view.searchQuery}".`);
 	}
 
+	const hiddenEdgeTypes = Object.entries(state.view.edgeVisibility)
+		.filter(([, isVisible]) => !isVisible)
+		.map(([edgeType]) => edgeType);
+	if (hiddenEdgeTypes.length > 0) {
+		notes.push(`Hidden edge types: ${hiddenEdgeTypes.join(', ')}.`);
+	}
+
 	if (notes.length === 0) {
 		return baseMessage;
 	}
@@ -1041,17 +1346,26 @@ function updateFilterControlStates() {
 	if (elements.toggleContainment) {
 		elements.toggleContainment.dataset.active = state.view.hideStructuralEdges ? 'true' : 'false';
 		elements.toggleContainment.textContent = state.view.hideStructuralEdges ? 'Structural Hidden' : 'Hide Structural Edges';
+		elements.toggleContainment.setAttribute('aria-pressed', state.view.hideStructuralEdges ? 'true' : 'false');
 	}
 
 	if (elements.toggleVariables) {
 		elements.toggleVariables.dataset.active = state.view.hideVariables ? 'true' : 'false';
 		elements.toggleVariables.textContent = state.view.hideVariables ? 'Variables Hidden' : 'Hide Variables';
+		elements.toggleVariables.setAttribute('aria-pressed', state.view.hideVariables ? 'true' : 'false');
 	}
 
 	if (elements.toggleSmartLabels) {
 		elements.toggleSmartLabels.dataset.active = state.view.smartLabels ? 'true' : 'false';
 		elements.toggleSmartLabels.textContent = `Smart Labels: ${state.view.smartLabels ? 'On' : 'Off'}`;
+		elements.toggleSmartLabels.setAttribute('aria-pressed', state.view.smartLabels ? 'true' : 'false');
 	}
+
+	updateEdgeToggleButton(elements.toggleEdgeCalls, 'Calls', 'calls');
+	updateEdgeToggleButton(elements.toggleEdgeImplements, 'Implements', 'implements');
+	updateEdgeToggleButton(elements.toggleEdgeReads, 'Reads', 'reads');
+	updateEdgeToggleButton(elements.toggleEdgeWrites, 'Writes', 'writes');
+	updateEdgeToggleButton(elements.toggleEdgeFileDependency, 'File Deps', 'file-dependency');
 
 	if (elements.edgeBudget) {
 		elements.edgeBudget.value = String(state.view.edgeBudget);
@@ -1080,6 +1394,11 @@ function resetClarityControls() {
 	state.view.hideVariables = false;
 	state.view.smartLabels = true;
 	state.view.searchQuery = '';
+	state.view.edgeVisibility.calls = true;
+	state.view.edgeVisibility.implements = true;
+	state.view.edgeVisibility.reads = true;
+	state.view.edgeVisibility.writes = true;
+	state.view.edgeVisibility['file-dependency'] = true;
 
 	if (elements.searchInput) {
 		elements.searchInput.value = '';
@@ -1090,6 +1409,27 @@ function resetClarityControls() {
 	}
 
 	updateFilterControlStates();
+}
+
+function toggleEdgeVisibility(edgeType) {
+	if (!Object.prototype.hasOwnProperty.call(state.view.edgeVisibility, edgeType)) {
+		return;
+	}
+
+	state.view.edgeVisibility[edgeType] = !state.view.edgeVisibility[edgeType];
+	updateFilterControlStates();
+	renderVisibleGraph();
+}
+
+function updateEdgeToggleButton(button, label, edgeType) {
+	if (!button) {
+		return;
+	}
+
+	const isVisible = state.view.edgeVisibility[edgeType] !== false;
+	button.dataset.active = isVisible ? 'true' : 'false';
+	button.textContent = `${label}: ${isVisible ? 'On' : 'Off'}`;
+	button.setAttribute('aria-pressed', isVisible ? 'true' : 'false');
 }
 
 function applyAdaptiveDetailMode() {
@@ -1126,6 +1466,25 @@ function applyAdaptiveDetailMode() {
 	} else {
 		edges.removeClass('edge-low-detail');
 	}
+}
+
+function ensureKeyboardFocusNode() {
+	if (!state.cy) {
+		return;
+	}
+
+	const current = state.keyboardNodeId ? state.cy.getElementById(state.keyboardNodeId) : undefined;
+	if (current && current.isNode && current.isNode() && current.visible()) {
+		return;
+	}
+
+	const firstVisible = state.cy.nodes(':visible').first();
+	if (!firstVisible || !firstVisible.isNode || !firstVisible.isNode()) {
+		state.keyboardNodeId = '';
+		return;
+	}
+
+	state.keyboardNodeId = firstVisible.id();
 }
 
 function updateLoadMoreButton() {
@@ -1169,6 +1528,173 @@ function sanitizeTotals(totals, payload) {
 	};
 }
 
+function bindOverflowMenuInteractions() {
+	if (!elements.menuToggle || !elements.overflowMenu) {
+		return;
+	}
+
+	document.addEventListener('click', (event) => {
+		if (!isOverflowMenuOpen()) {
+			return;
+		}
+
+		const target = event.target;
+		if (!(target instanceof Node)) {
+			return;
+		}
+
+		if (elements.menuToggle.contains(target) || elements.overflowMenu.contains(target)) {
+			return;
+		}
+
+		setOverflowMenuOpen(false);
+	});
+
+	document.addEventListener('keydown', (event) => {
+		if (!isOverflowMenuOpen()) {
+			return;
+		}
+
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			setOverflowMenuOpen(false);
+			elements.menuToggle.focus();
+		}
+	});
+
+	elements.menuToggle.addEventListener('keydown', (event) => {
+		if (event.key !== 'ArrowDown') {
+			return;
+		}
+
+		event.preventDefault();
+		setOverflowMenuOpen(true);
+		focusFirstMenuButton();
+	});
+}
+
+function isOverflowMenuOpen() {
+	return Boolean(elements.overflowMenu && !elements.overflowMenu.hidden);
+}
+
+function toggleOverflowMenu() {
+	setOverflowMenuOpen(!isOverflowMenuOpen());
+
+	if (isOverflowMenuOpen()) {
+		focusFirstMenuButton();
+	}
+}
+
+function setOverflowMenuOpen(isOpen) {
+	if (!elements.menuToggle || !elements.overflowMenu) {
+		return;
+	}
+
+	elements.overflowMenu.hidden = !isOpen;
+	elements.menuToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function focusFirstMenuButton() {
+	if (!elements.overflowMenu) {
+		return;
+	}
+
+	const firstButton = elements.overflowMenu.querySelector('button');
+	if (firstButton instanceof HTMLElement) {
+		firstButton.focus();
+	}
+}
+
+function toggleTopBarsVisibility() {
+	setTopBarsVisibility(!state.topBarsVisible);
+}
+
+function setTopBarsVisibility(isVisible) {
+	state.topBarsVisible = Boolean(isVisible);
+
+	if (!state.topBarsVisible && isOverflowMenuOpen()) {
+		setOverflowMenuOpen(false);
+	}
+
+	if (elements.app) {
+		elements.app.classList.toggle('top-bars-hidden', !state.topBarsVisible);
+	}
+
+	const activeElement = document.activeElement;
+	if (!state.topBarsVisible
+		&& activeElement instanceof HTMLElement
+		&& ((elements.densityControls && elements.densityControls.contains(activeElement))
+			|| (elements.menuToggle && elements.menuToggle.contains(activeElement))
+			|| (elements.overflowMenu && elements.overflowMenu.contains(activeElement)))) {
+		if (elements.topBarsToggle) {
+			elements.topBarsToggle.focus();
+		}
+	}
+
+	updateTopBarsToggleState();
+}
+
+function updateTopBarsToggleState() {
+	if (!elements.topBarsToggle) {
+		return;
+	}
+
+	const isVisible = state.topBarsVisible;
+	elements.topBarsToggle.innerHTML = isVisible ? '&#9650;' : '&#9660;';
+	elements.topBarsToggle.setAttribute('aria-expanded', isVisible ? 'true' : 'false');
+	elements.topBarsToggle.setAttribute('aria-label', isVisible ? 'Hide top bars' : 'Show top bars');
+	elements.topBarsToggle.title = isVisible ? 'Hide top bars' : 'Show top bars';
+	elements.topBarsToggle.dataset.active = isVisible ? 'false' : 'true';
+}
+
+function bindWheelZoomBehavior() {
+	if (!elements.graph) {
+		return;
+	}
+
+	elements.graph.addEventListener('wheel', (event) => {
+		if (!state.cy) {
+			return;
+		}
+
+		event.preventDefault();
+
+		const nextZoom = computeWheelZoomTarget(state.cy.zoom(), event);
+		if (Math.abs(nextZoom - state.cy.zoom()) < 0.0001) {
+			return;
+		}
+
+		applyZoomAtRenderedPosition(nextZoom, getRenderedPositionFromPointer(event));
+	}, { passive: false });
+}
+
+function computeWheelZoomTarget(currentZoom, event) {
+	let delta = Number(event.deltaY) || 0;
+
+	if (event.deltaMode === 1) {
+		delta *= WHEEL_LINE_HEIGHT_PX;
+	} else if (event.deltaMode === 2) {
+		delta *= window.innerHeight;
+	}
+
+	const boundedDelta = clamp(delta, -WHEEL_ZOOM_MAX_DELTA, WHEEL_ZOOM_MAX_DELTA);
+	const zoomFactor = Math.exp(-boundedDelta * WHEEL_ZOOM_SPEED);
+	const targetZoom = currentZoom * zoomFactor;
+	return clamp(targetZoom, MIN_ZOOM, MAX_ZOOM);
+}
+
+function getRenderedPositionFromPointer(event) {
+	if (!elements.graph) {
+		return { x: 0, y: 0 };
+	}
+
+	const rect = elements.graph.getBoundingClientRect();
+	return {
+		x: event.clientX - rect.left,
+		y: event.clientY - rect.top,
+	};
+}
+
 function getMindMapTypeWeight(type) {
 	if (type === 'file') {
 		return 18;
@@ -1201,43 +1727,47 @@ function applyZoomStep(direction) {
 	}
 
 	const current = state.cy.zoom();
-	const factor = direction > 0 ? ZOOM_STEP_FACTOR : (1 / ZOOM_STEP_FACTOR);
-	const target = clamp(current * factor, MIN_ZOOM, MAX_ZOOM);
+	const target = direction > 0
+		? findNextZoomStop(current)
+		: findPreviousZoomStop(current);
 
 	if (Math.abs(target - current) < 0.0001) {
 		return;
 	}
 
-	animateZoomTo(target);
+	applyZoomAtRenderedPosition(target, getViewportCenter());
 }
 
-function animateZoomTo(targetZoom) {
+function findNextZoomStop(currentZoom) {
+	for (const stop of ZOOM_LEVEL_STOPS) {
+		if (stop > (currentZoom + 0.0001)) {
+			return stop;
+		}
+	}
+
+	return MAX_ZOOM;
+}
+
+function findPreviousZoomStop(currentZoom) {
+	for (let index = ZOOM_LEVEL_STOPS.length - 1; index >= 0; index -= 1) {
+		const stop = ZOOM_LEVEL_STOPS[index];
+		if (stop < (currentZoom - 0.0001)) {
+			return stop;
+		}
+	}
+
+	return MIN_ZOOM;
+}
+
+function applyZoomAtRenderedPosition(targetZoom, renderedPosition) {
 	if (!state.cy) {
 		return;
 	}
 
-	const cy = state.cy;
-	const center = getViewportCenter();
-	const startZoom = cy.zoom();
-	const startTime = performance.now();
-
-	const tick = (timestamp) => {
-		const elapsed = timestamp - startTime;
-		const t = Math.min(1, elapsed / ZOOM_ANIMATION_MS);
-		const eased = 1 - Math.pow(1 - t, 3);
-		const nextZoom = startZoom + ((targetZoom - startZoom) * eased);
-
-		cy.zoom({
-			level: clamp(nextZoom, MIN_ZOOM, MAX_ZOOM),
-			renderedPosition: center,
-		});
-
-		if (t < 1) {
-			requestAnimationFrame(tick);
-		}
-	};
-
-	requestAnimationFrame(tick);
+	state.cy.zoom({
+		level: clamp(targetZoom, MIN_ZOOM, MAX_ZOOM),
+		renderedPosition,
+	});
 }
 
 function getViewportCenter() {
@@ -1284,6 +1814,7 @@ function updateDirectionButton() {
 	elements.directionToggle.textContent = `Direction: ${isTopToBottom ? 'TB' : 'LR'}`;
 	elements.directionToggle.dataset.active = isTopToBottom ? 'false' : 'true';
 	elements.directionToggle.disabled = state.layoutMode !== 'dag';
+	elements.directionToggle.setAttribute('aria-pressed', isTopToBottom ? 'false' : 'true');
 	elements.directionToggle.title = state.layoutMode === 'dag'
 		? 'Set DAG rank direction'
 		: 'Direction applies to DAG view only';
@@ -1297,6 +1828,7 @@ function updateViewToggleButton() {
 	const isMindMap = state.layoutMode === 'mindmap';
 	elements.viewToggle.textContent = `View: ${isMindMap ? 'Mind Map' : 'DAG'}`;
 	elements.viewToggle.dataset.active = isMindMap ? 'false' : 'true';
+	elements.viewToggle.setAttribute('aria-pressed', isMindMap ? 'false' : 'true');
 }
 
 function readThemeTokens() {

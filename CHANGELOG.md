@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6
+
+- Added a single toolbar arrow toggle to hide/show top graph bars (up arrow when visible, down arrow when hidden)
+- Improved graph webview controls with overflow menu behavior and responsive top-bar collapse handling
+
 ## 0.1.5
 
 - Added a dedicated Code Graph view and graph webview provider integration
