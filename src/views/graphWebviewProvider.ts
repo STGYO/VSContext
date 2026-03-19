@@ -354,6 +354,7 @@ function fallbackTemplate(): string {
           aria-expanded="false"
           aria-controls="overflow-menu"
           title="Graph controls"
+          aria-label="Open graph controls menu"
         >
           ...
         </button>
