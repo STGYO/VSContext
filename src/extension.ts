@@ -38,12 +38,15 @@ async function reconcileHydratedGraph(
   graphBuilder: WorkspaceGraphBuilder,
   logger: Logger,
   maxIndexedFiles: number,
-): Promise<{ upserts: number; deletes: number }> {
+  progress?: vscode.Progress<{ message?: string; increment?: number }>,
+  cancellationToken?: vscode.CancellationToken,
+): Promise<{ upserts: number; deletes: number; cancelled: boolean }> {
   const workspaceFolder = getPrimaryWorkspaceFolder();
   if (!workspaceFolder) {
     return {
       upserts: 0,
       deletes: 0,
+      cancelled: false,
     };
   }
 
@@ -54,6 +57,15 @@ async function reconcileHydratedGraph(
 
   let checked = 0;
   for (const uri of scanResult.files) {
+    if (cancellationToken?.isCancellationRequested) {
+      logger.info('[VSContext] Hydrated graph refresh cancelled while scanning workspace files.');
+      return {
+        upserts: 0,
+        deletes: 0,
+        cancelled: true,
+      };
+    }
+
     const filePath = toWorkspaceRelativePath(uri);
     currentPaths.add(filePath);
 
@@ -69,6 +81,7 @@ async function reconcileHydratedGraph(
 
     checked += 1;
     if (checked % 100 === 0) {
+      progress?.report({ message: `Scanning workspace (${checked}/${scanResult.files.length})` });
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
@@ -79,10 +92,27 @@ async function reconcileHydratedGraph(
     .filter((filePath) => !currentPaths.has(filePath))
     .map((filePath) => vscode.Uri.file(path.join(workspaceFolder.uri.fsPath, filePath)));
 
+  const totalOperations = deletedUris.length + changedUris.length;
   let processed = 0;
+
   for (const uri of deletedUris) {
+    if (cancellationToken?.isCancellationRequested) {
+      logger.info('[VSContext] Hydrated graph refresh cancelled while removing deleted files.');
+      return {
+        upserts: 0,
+        deletes: processed,
+        cancelled: true,
+      };
+    }
+
     await graphBuilder.removeDocument(uri);
     processed += 1;
+    if (totalOperations > 0) {
+      progress?.report({
+        message: `Refreshing graph (${processed}/${totalOperations})`,
+        increment: (100 / totalOperations),
+      });
+    }
     if (processed % 25 === 0) {
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
@@ -90,9 +120,26 @@ async function reconcileHydratedGraph(
     }
   }
 
+  let appliedUpserts = 0;
   for (const uri of changedUris) {
+    if (cancellationToken?.isCancellationRequested) {
+      logger.info('[VSContext] Hydrated graph refresh cancelled while applying updated files.');
+      return {
+        upserts: appliedUpserts,
+        deletes: deletedUris.length,
+        cancelled: true,
+      };
+    }
+
     await graphBuilder.upsertDocument(uri);
+    appliedUpserts += 1;
     processed += 1;
+    if (totalOperations > 0) {
+      progress?.report({
+        message: `Refreshing graph (${processed}/${totalOperations})`,
+        increment: (100 / totalOperations),
+      });
+    }
     if (processed % 25 === 0) {
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
@@ -103,8 +150,9 @@ async function reconcileHydratedGraph(
   logger.info(`[VSContext] Hydrated graph refresh applied ${changedUris.length} upserts and ${deletedUris.length} deletes.`);
 
   return {
-    upserts: changedUris.length,
+    upserts: appliedUpserts,
     deletes: deletedUris.length,
+    cancelled: false,
   };
 }
 
@@ -143,8 +191,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           {
             location: vscode.ProgressLocation.Window,
             title: 'VSContext: Updating index',
+            cancellable: true,
           },
-          async () => {
+          async (progress, token) => {
             if (graphBuilder.isIndexing()) {
               if (pendingUpserts.size > 0 || pendingDeletes.size > 0) {
                 scheduleIncrementalRefresh('deferred update');
@@ -161,9 +210,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             pendingUpserts.clear();
 
             let updatedCount = 0;
-            for (const uri of deleteUris) {
+            const totalUpdates = deleteUris.length + upsertUris.length;
+            for (let index = 0; index < deleteUris.length; index += 1) {
+              if (token.isCancellationRequested) {
+                for (let remaining = index; remaining < deleteUris.length; remaining += 1) {
+                  pendingDeletes.add(deleteUris[remaining].toString());
+                }
+
+                for (const pendingUri of upsertUris) {
+                  pendingUpserts.add(pendingUri.toString());
+                }
+
+                logger.info('[VSContext] Incremental indexing update cancelled; remaining files were re-queued.');
+                return;
+              }
+
+              const uri = deleteUris[index];
               await graphBuilder.removeDocument(uri);
               updatedCount += 1;
+              if (totalUpdates > 0) {
+                progress.report({
+                  message: `Updating index (${updatedCount}/${totalUpdates})`,
+                  increment: (100 / totalUpdates),
+                });
+              }
               if (updatedCount % 10 === 0) {
                 await new Promise<void>((resolve) => {
                   setImmediate(resolve);
@@ -171,9 +241,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               }
             }
 
-            for (const uri of upsertUris) {
+            for (let index = 0; index < upsertUris.length; index += 1) {
+              if (token.isCancellationRequested) {
+                for (let remaining = index; remaining < upsertUris.length; remaining += 1) {
+                  pendingUpserts.add(upsertUris[remaining].toString());
+                }
+
+                logger.info('[VSContext] Incremental indexing update cancelled; remaining files were re-queued.');
+                return;
+              }
+
+              const uri = upsertUris[index];
               await graphBuilder.upsertDocument(uri);
               updatedCount += 1;
+              if (totalUpdates > 0) {
+                progress.report({
+                  message: `Updating index (${updatedCount}/${totalUpdates})`,
+                  increment: (100 / totalUpdates),
+                });
+              }
               if (updatedCount % 10 === 0) {
                 await new Promise<void>((resolve) => {
                   setImmediate(resolve);
@@ -283,7 +369,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const latestGraph = await graphBuilder.getGraph();
             const node = latestGraph.nodes.get(nodeId);
             if (!node) {
-              return;
+              throw new Error('The selected symbol is no longer available in the graph.');
             }
 
             await openGraphNodeInEditor(node);
@@ -327,7 +413,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const latestGraph = await graphBuilder.getGraph();
             const node = latestGraph.nodes.get(nodeId);
             if (!node) {
-              return;
+              throw new Error('The selected symbol is no longer available in the graph.');
             }
 
             await openGraphNodeInEditor(node);
@@ -357,11 +443,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         {
           location: vscode.ProgressLocation.Window,
           title: 'VSContext: Refreshing cached graph',
+          cancellable: true,
         },
-        async () => {
+        async (progress, token) => {
           try {
-            const refreshed = await reconcileHydratedGraph(graphBuilder, logger, scanSettings.maxIndexedFiles);
-            if (refreshed.upserts > 0 || refreshed.deletes > 0) {
+            const refreshed = await reconcileHydratedGraph(
+              graphBuilder,
+              logger,
+              scanSettings.maxIndexedFiles,
+              progress,
+              token,
+            );
+            if (!refreshed.cancelled && (refreshed.upserts > 0 || refreshed.deletes > 0)) {
               treeProvider.refresh();
             }
           } catch (error) {

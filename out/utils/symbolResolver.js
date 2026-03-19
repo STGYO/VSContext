@@ -37,13 +37,22 @@ exports.resolveSelectedSymbol = resolveSelectedSymbol;
 exports.openGraphNodeInEditor = openGraphNodeInEditor;
 const vscode = __importStar(require("vscode"));
 const workspaceScanner_1 = require("./workspaceScanner");
+const OPEN_EXPLORER_ACTION = 'Open VSContext Explorer';
+const PICK_INDEXED_SYMBOL_ACTION = 'Choose Indexed Symbol';
 async function resolveSelectedSymbol(graph, explicitNodeId, options) {
     if (explicitNodeId) {
         return graph.nodes.get(explicitNodeId);
     }
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
-        void vscode.window.showWarningMessage('Open a file and place the cursor inside a function or method.');
+        const action = await vscode.window.showWarningMessage('Open a file and place the cursor inside a function or method.', OPEN_EXPLORER_ACTION, PICK_INDEXED_SYMBOL_ACTION);
+        if (action === OPEN_EXPLORER_ACTION) {
+            await vscode.commands.executeCommand('workbench.view.extension.vscontextExplorer');
+            return undefined;
+        }
+        if (action === PICK_INDEXED_SYMBOL_ACTION) {
+            return promptForSymbolSelection([...graph.nodes.values()], 'Select a symbol from indexed workspace', true);
+        }
         return undefined;
     }
     const filePath = (0, workspaceScanner_1.toWorkspaceRelativePath)(editor.document.uri);
@@ -67,20 +76,53 @@ async function resolveSelectedSymbol(graph, explicitNodeId, options) {
             void vscode.window.showInformationMessage('VSContext is still indexing the workspace.');
             return undefined;
         }
-        void vscode.window.showWarningMessage('No function symbols were found in the current file.');
+        const action = await vscode.window.showWarningMessage('No function symbols were found in the current file.', PICK_INDEXED_SYMBOL_ACTION);
+        if (action === PICK_INDEXED_SYMBOL_ACTION) {
+            return promptForSymbolSelection([...graph.nodes.values()], 'Select a symbol from indexed workspace', true);
+        }
         return undefined;
     }
-    const picked = await vscode.window.showQuickPick(fileNodes.map((node) => ({
-        label: node.symbolName,
-        description: `${node.filePath}:${node.lineNumber}`,
-        nodeId: node.id,
-    })), {
-        placeHolder: 'Select a function or method to analyze',
+    return promptForSymbolSelection(fileNodes, 'Select a function or method to analyze', false);
+}
+async function promptForSymbolSelection(nodes, placeHolder, includeFilePathInDescription) {
+    if (nodes.length === 0) {
+        return undefined;
+    }
+    const sortedNodes = [...nodes].sort((left, right) => {
+        if (left.filePath !== right.filePath) {
+            return left.filePath.localeCompare(right.filePath);
+        }
+        if (left.lineNumber !== right.lineNumber) {
+            return left.lineNumber - right.lineNumber;
+        }
+        return left.symbolName.localeCompare(right.symbolName);
+    });
+    const picked = await vscode.window.showQuickPick(sortedNodes.map((node) => {
+        const symbolName = node.symbolName && node.symbolName.trim().length > 0
+            ? node.symbolName
+            : 'Unknown Symbol';
+        const locationLabel = includeFilePathInDescription
+            ? `${node.filePath}:${node.lineNumber}`
+            : `Line ${node.lineNumber}`;
+        return {
+            label: symbolName,
+            description: locationLabel,
+            detail: `${toSymbolKindLabel(node.symbolKind)} - lines ${node.rangeStartLine}-${node.rangeEndLine}`,
+            nodeId: node.id,
+        };
+    }), {
+        placeHolder,
+        matchOnDescription: true,
+        matchOnDetail: true,
     });
     if (!picked) {
         return undefined;
     }
-    return graph.nodes.get(picked.nodeId);
+    return nodes.find((node) => node.id === picked.nodeId);
+}
+function toSymbolKindLabel(kind) {
+    const labels = vscode.SymbolKind;
+    return labels[kind] ?? 'Symbol';
 }
 async function openGraphNodeInEditor(node) {
     const uri = vscode.Uri.parse(node.uriString);
