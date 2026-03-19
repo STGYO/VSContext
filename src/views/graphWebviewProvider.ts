@@ -350,7 +350,7 @@ function fallbackTemplate(): string {
         <button
           id="menu-toggle"
           type="button"
-          aria-haspopup="menu"
+          aria-haspopup="true"
           aria-expanded="false"
           aria-controls="overflow-menu"
           title="Graph controls"
@@ -368,7 +368,7 @@ function fallbackTemplate(): string {
         >
           &#9650;
         </button>
-        <div id="overflow-menu" class="overflow-menu" role="menu" aria-label="Graph controls" hidden>
+        <div id="overflow-menu" class="overflow-menu" aria-label="Graph controls" hidden>
           <div class="menu-group" role="group" aria-label="Layout controls">
             <p class="menu-heading">Layout</p>
             <button id="view-toggle" type="button">View: Mind Map</button>
