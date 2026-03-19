@@ -376,7 +376,7 @@ function renderAnalysisHtml(webview: vscode.Webview, options: AnalysisPanelOptio
   </table>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    const graphData = ${payload};
+    const graphData = JSON.parse(${JSON.stringify(payload).replace(/</g, '\\u003c')});
 
     const nodeWidth = 230;
     const nodeHeight = 32;
