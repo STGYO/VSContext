@@ -50,18 +50,18 @@
 
           <div class="menu-group" role="group" aria-label="Visibility filters">
             <p class="menu-heading">Visibility</p>
-            <button id="toggle-containment" type="button" data-active="false" title="Hide containment-only relationships">Hide Structural Edges</button>
-            <button id="toggle-variables" type="button" data-active="false" title="Hide variable nodes">Hide Variables</button>
-            <button id="toggle-smart-labels" type="button" data-active="true" title="Hide most labels when zoomed out">Smart Labels: On</button>
+            <button id="toggle-containment" type="button" role="menuitemcheckbox" aria-checked="false" data-active="false" title="Hide containment-only relationships">Hide Structural Edges</button>
+            <button id="toggle-variables" type="button" role="menuitemcheckbox" aria-checked="false" data-active="false" title="Hide variable nodes">Hide Variables</button>
+            <button id="toggle-smart-labels" type="button" role="menuitemcheckbox" aria-checked="true" data-active="true" title="Hide most labels when zoomed out">Smart Labels: On</button>
           </div>
 
           <div class="menu-group" role="group" aria-label="Edge type filters">
             <p class="menu-heading">Edge Types</p>
-            <button id="toggle-edge-calls" type="button" data-active="true" title="Toggle calls edges">Calls: On</button>
-            <button id="toggle-edge-implements" type="button" data-active="true" title="Toggle implements edges">Implements: On</button>
-            <button id="toggle-edge-reads" type="button" data-active="true" title="Toggle reads edges">Reads: On</button>
-            <button id="toggle-edge-writes" type="button" data-active="true" title="Toggle writes edges">Writes: On</button>
-            <button id="toggle-edge-file-dependency" type="button" data-active="true" title="Toggle file dependency edges">File Deps: On</button>
+            <button id="toggle-edge-calls" type="button" role="menuitemcheckbox" aria-checked="true" data-active="true" title="Toggle calls edges">Calls: On</button>
+            <button id="toggle-edge-implements" type="button" role="menuitemcheckbox" aria-checked="true" data-active="true" title="Toggle implements edges">Implements: On</button>
+            <button id="toggle-edge-reads" type="button" role="menuitemcheckbox" aria-checked="true" data-active="true" title="Toggle reads edges">Reads: On</button>
+            <button id="toggle-edge-writes" type="button" role="menuitemcheckbox" aria-checked="true" data-active="true" title="Toggle writes edges">Writes: On</button>
+            <button id="toggle-edge-file-dependency" type="button" role="menuitemcheckbox" aria-checked="true" data-active="true" title="Toggle file dependency edges">File Deps: On</button>
             <button id="reset-filters" type="button" title="Reset all clarity controls">Reset</button>
           </div>
         </div>

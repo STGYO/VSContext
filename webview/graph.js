@@ -1346,19 +1346,19 @@ function updateFilterControlStates() {
 	if (elements.toggleContainment) {
 		elements.toggleContainment.dataset.active = state.view.hideStructuralEdges ? 'true' : 'false';
 		elements.toggleContainment.textContent = state.view.hideStructuralEdges ? 'Structural Hidden' : 'Hide Structural Edges';
-		elements.toggleContainment.setAttribute('aria-pressed', state.view.hideStructuralEdges ? 'true' : 'false');
+		elements.toggleContainment.setAttribute('aria-checked', state.view.hideStructuralEdges ? 'true' : 'false');
 	}
 
 	if (elements.toggleVariables) {
 		elements.toggleVariables.dataset.active = state.view.hideVariables ? 'true' : 'false';
 		elements.toggleVariables.textContent = state.view.hideVariables ? 'Variables Hidden' : 'Hide Variables';
-		elements.toggleVariables.setAttribute('aria-pressed', state.view.hideVariables ? 'true' : 'false');
+		elements.toggleVariables.setAttribute('aria-checked', state.view.hideVariables ? 'true' : 'false');
 	}
 
 	if (elements.toggleSmartLabels) {
 		elements.toggleSmartLabels.dataset.active = state.view.smartLabels ? 'true' : 'false';
 		elements.toggleSmartLabels.textContent = `Smart Labels: ${state.view.smartLabels ? 'On' : 'Off'}`;
-		elements.toggleSmartLabels.setAttribute('aria-pressed', state.view.smartLabels ? 'true' : 'false');
+		elements.toggleSmartLabels.setAttribute('aria-checked', state.view.smartLabels ? 'true' : 'false');
 	}
 
 	updateEdgeToggleButton(elements.toggleEdgeCalls, 'Calls', 'calls');
@@ -1429,7 +1429,7 @@ function updateEdgeToggleButton(button, label, edgeType) {
 	const isVisible = state.view.edgeVisibility[edgeType] !== false;
 	button.dataset.active = isVisible ? 'true' : 'false';
 	button.textContent = `${label}: ${isVisible ? 'On' : 'Off'}`;
-	button.setAttribute('aria-pressed', isVisible ? 'true' : 'false');
+	button.setAttribute('aria-checked', isVisible ? 'true' : 'false');
 }
 
 function applyAdaptiveDetailMode() {
