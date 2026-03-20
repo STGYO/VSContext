@@ -115,6 +115,7 @@ const state = {
 	},
 	view: {
 		edgeBudget: MAX_VISIBLE_EDGES,
+		legendVisible: true,
 		hideStructuralEdges: false,
 		hideVariables: false,
 		smartLabels: true,
@@ -147,6 +148,7 @@ const elements = {
 	notice: document.getElementById('notice'),
 	densityControls: document.getElementById('density-controls'),
 	searchInput: document.getElementById('graph-search'),
+	edgeBudgetLabel: document.getElementById('edge-budget-label'),
 	edgeBudget: document.getElementById('edge-budget'),
 	edgeBudgetValue: document.getElementById('edge-budget-value'),
 	toggleContainment: document.getElementById('toggle-containment'),
@@ -169,6 +171,9 @@ const elements = {
 	collapseAll: document.getElementById('collapse-all'),
 	expandAll: document.getElementById('expand-all'),
 	tooltip: document.getElementById('node-tooltip'),
+	legend: document.getElementById('legend'),
+	legendToggle: document.getElementById('legend-toggle'),
+	legendContent: document.getElementById('legend-content'),
 	legendSwatches: document.querySelectorAll('.legend-swatch'),
 };
 
@@ -266,6 +271,11 @@ bindClick(elements.expandAll, () => {
 	runLayout(false);
 });
 
+bindClick(elements.legendToggle, () => {
+	state.view.legendVisible = !state.view.legendVisible;
+	updateLegendVisibility();
+});
+
 bindClick(elements.toggleContainment, () => {
 	state.view.hideStructuralEdges = !state.view.hideStructuralEdges;
 	updateFilterControlStates();
@@ -352,6 +362,7 @@ updateDirectionButton();
 bindOverflowMenuInteractions();
 initKeyboardInteractions();
 updateTopBarsToggleState();
+updateLegendVisibility();
 vscode.postMessage({ type: 'ready' });
 
 function applyGraphPayload(payload, envelope) {
@@ -1374,12 +1385,51 @@ function updateFilterControlStates() {
 	updateEdgeBudgetLabel();
 }
 
+function updateLegendVisibility() {
+	const isVisible = state.view.legendVisible;
+
+	if (elements.legend) {
+		elements.legend.dataset.collapsed = isVisible ? 'false' : 'true';
+	}
+
+	if (elements.legendContent) {
+		elements.legendContent.hidden = !isVisible;
+	}
+
+	if (elements.legendToggle) {
+		elements.legendToggle.textContent = isVisible ? 'Hide Legend' : 'Show Legend';
+		elements.legendToggle.setAttribute('aria-expanded', isVisible ? 'true' : 'false');
+		elements.legendToggle.title = isVisible ? 'Hide legend' : 'Show legend';
+	}
+}
+
 function updateEdgeBudgetLabel() {
 	if (!elements.edgeBudgetValue) {
 		return;
 	}
 
 	elements.edgeBudgetValue.textContent = `${state.view.edgeBudget.toLocaleString()}`;
+	updateEdgeBudgetTooltip();
+}
+
+function buildEdgeBudgetTooltipText(edgeBudget) {
+	return `Edge Budget sets the maximum number of edges rendered (${MIN_EDGE_BUDGET.toLocaleString()}-${MAX_VISIBLE_EDGES.toLocaleString()}). Lower values improve readability and performance. Current: ${edgeBudget.toLocaleString()}.`;
+}
+
+function updateEdgeBudgetTooltip() {
+	const tooltipText = buildEdgeBudgetTooltipText(state.view.edgeBudget);
+
+	if (elements.edgeBudget) {
+		elements.edgeBudget.title = tooltipText;
+	}
+
+	if (elements.edgeBudgetLabel) {
+		elements.edgeBudgetLabel.title = tooltipText;
+	}
+
+	if (elements.edgeBudgetValue) {
+		elements.edgeBudgetValue.title = `Current edge budget: ${state.view.edgeBudget.toLocaleString()}`;
+	}
 }
 
 function resetClarityControls() {

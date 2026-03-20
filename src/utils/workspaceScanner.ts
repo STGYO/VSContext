@@ -1,9 +1,9 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-export const SOURCE_INCLUDE_GLOB = '**/*.{ts,tsx,js,jsx,py,go,java,rs,cpp,c,h}';
+export const SOURCE_INCLUDE_GLOB = '**/*.{ts,tsx,js,jsx,py,go,java,rs,cpp,cc,cxx,c,h,hpp,hh,hxx,cs,php,phtml,rb,kt,kts,swift}';
 export const SOURCE_EXCLUDE_GLOB = '**/{node_modules,.git,dist,build,out,coverage,.venv,venv,__pycache__,site-packages}/**';
-const EXCLUDED_DIR_FILE_GLOB = '**/{node_modules,.git,dist,build,out,coverage,.venv,venv,__pycache__,site-packages}/**/*.{ts,tsx,js,jsx,py,go,java,rs,cpp,c,h}';
+const EXCLUDED_DIR_FILE_GLOB = '**/{node_modules,.git,dist,build,out,coverage,.venv,venv,__pycache__,site-packages}/**/*.{ts,tsx,js,jsx,py,go,java,rs,cpp,cc,cxx,c,h,hpp,hh,hxx,cs,php,phtml,rb,kt,kts,swift}';
 
 export function getPrimaryWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   const folders = vscode.workspace.workspaceFolders;

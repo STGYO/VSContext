@@ -404,8 +404,8 @@ function fallbackTemplate(): string {
       <label for="graph-search">Search</label>
       <input id="graph-search" type="search" placeholder="Node or file name" spellcheck="false" />
 
-      <label for="edge-budget">Edge Budget</label>
-      <input id="edge-budget" type="range" min="1500" max="22000" step="500" value="22000" />
+      <label id="edge-budget-label" for="edge-budget" title="Edge Budget controls the maximum number of edges rendered. Lower values improve clarity and performance, while higher values show more relationships.">Edge Budget</label>
+      <input id="edge-budget" type="range" min="1500" max="22000" step="500" value="22000" title="Edge Budget controls the maximum number of edges rendered. Lower values improve clarity and performance, while higher values show more relationships." />
       <span id="edge-budget-value" aria-live="polite">22000</span>
     </section>
     <section id="graph-shell">
@@ -416,15 +416,20 @@ function fallbackTemplate(): string {
         <button id="zoom-out" type="button" aria-label="Zoom out">-</button>
       </div>
       <aside id="legend" aria-label="Graph legend">
-        <h3>Legend</h3>
-        <ul>
-          <li><span class="legend-swatch" data-node-type="file"></span>File Scope</li>
-          <li><span class="legend-swatch" data-node-type="class"></span>Class Scope</li>
-          <li><span class="legend-swatch" data-node-type="function"></span>Function</li>
-          <li><span class="legend-swatch" data-node-type="method"></span>Method</li>
-          <li><span class="legend-swatch" data-node-type="variable"></span>Variable</li>
-        </ul>
-        <p class="legend-help">Double-click a parent boundary to collapse or expand. Ctrl/Cmd+Click or Alt+Click opens code. Keyboard: arrows move focus, Enter opens, +/- zoom, F fit, V view mode, D direction, / search.</p>
+        <div class="legend-header">
+          <h3>Legend</h3>
+          <button id="legend-toggle" type="button" aria-controls="legend-content" aria-expanded="true" title="Hide legend">Hide Legend</button>
+        </div>
+        <div id="legend-content">
+          <ul>
+            <li><span class="legend-swatch" data-node-type="file"></span>File Scope</li>
+            <li><span class="legend-swatch" data-node-type="class"></span>Class Scope</li>
+            <li><span class="legend-swatch" data-node-type="function"></span>Function</li>
+            <li><span class="legend-swatch" data-node-type="method"></span>Method</li>
+            <li><span class="legend-swatch" data-node-type="variable"></span>Variable</li>
+          </ul>
+          <p class="legend-help">Double-click a parent boundary to collapse or expand. Ctrl/Cmd+Click or Alt+Click opens code. Keyboard: arrows move focus, Enter opens, +/- zoom, F fit, V view mode, D direction, / search.</p>
+        </div>
       </aside>
       <div id="node-tooltip" role="tooltip" hidden></div>
     </section>

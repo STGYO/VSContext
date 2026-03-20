@@ -155,6 +155,8 @@ Use this when you want workspace-level architecture context.
 - Toggle view mode: Mind Map or DAG.
 - Toggle DAG direction when in DAG mode.
 - Use clarity controls to reduce visual noise.
+- Use the legend control to switch between `Hide Legend` and `Show Legend`.
+- Hover Edge Budget for guidance on performance versus relationship visibility.
 - Use edge filters to isolate relationship categories.
 - Hide/show top bars using arrow toggle.
 
@@ -182,6 +184,11 @@ Keyboard shortcuts in graph view:
 | Java | Supported |
 | Rust | Supported |
 | C / C++ / Headers | Supported |
+| C# | Supported |
+| PHP | Supported |
+| Ruby | Supported |
+| Kotlin | Supported |
+| Swift | Supported |
 
 VSContext scans these source patterns:
 
@@ -194,8 +201,22 @@ VSContext scans these source patterns:
 - `**/*.java`
 - `**/*.rs`
 - `**/*.cpp`
+- `**/*.cc`
+- `**/*.cxx`
 - `**/*.c`
 - `**/*.h`
+- `**/*.hpp`
+- `**/*.hh`
+- `**/*.hxx`
+- `**/*.cs`
+- `**/*.php`
+- `**/*.phtml`
+- `**/*.rb`
+- `**/*.kt`
+- `**/*.kts`
+- `**/*.swift`
+
+Swift files are currently indexed through VS Code document symbol providers (AST pre-scan parser support is not enabled on Windows builds).
 
 VSContext ignores common generated/vendor folders:
 

@@ -4,11 +4,15 @@ import { parentPort, workerData } from 'worker_threads';
 
 import Parser = require('tree-sitter');
 import C = require('tree-sitter-c');
+import CSharp = require('tree-sitter-c-sharp');
 import CPP = require('tree-sitter-cpp');
 import Go = require('tree-sitter-go');
 import Java = require('tree-sitter-java');
 import JavaScript = require('tree-sitter-javascript');
+import Kotlin = require('tree-sitter-kotlin');
+import PHP = require('tree-sitter-php');
 import Python = require('tree-sitter-python');
+import Ruby = require('tree-sitter-ruby');
 import Rust = require('tree-sitter-rust');
 import TypeScript = require('tree-sitter-typescript');
 
@@ -29,7 +33,7 @@ interface WorkerBatchResult {
   readonly symbolMap: Record<string, WorkerExtractedSymbol[]>;
 }
 
-type LanguageFamily = 'ts' | 'py' | 'rs' | 'go' | 'java' | 'c';
+type LanguageFamily = 'ts' | 'py' | 'rs' | 'go' | 'java' | 'c' | 'cs' | 'php' | 'ruby' | 'kotlin';
 
 const TS_LANGUAGES = TypeScript as unknown as {
   readonly typescript: unknown;
@@ -48,6 +52,17 @@ const LANGUAGE_BY_EXTENSION: Record<string, { language: unknown; family: Languag
   '.c': { language: C as unknown, family: 'c' },
   '.h': { language: CPP as unknown, family: 'c' },
   '.cpp': { language: CPP as unknown, family: 'c' },
+  '.cc': { language: CPP as unknown, family: 'c' },
+  '.cxx': { language: CPP as unknown, family: 'c' },
+  '.hpp': { language: CPP as unknown, family: 'c' },
+  '.hh': { language: CPP as unknown, family: 'c' },
+  '.hxx': { language: CPP as unknown, family: 'c' },
+  '.cs': { language: CSharp as unknown, family: 'cs' },
+  '.php': { language: PHP as unknown, family: 'php' },
+  '.phtml': { language: PHP as unknown, family: 'php' },
+  '.rb': { language: Ruby as unknown, family: 'ruby' },
+  '.kt': { language: Kotlin as unknown, family: 'kotlin' },
+  '.kts': { language: Kotlin as unknown, family: 'kotlin' },
 };
 
 const IDENTIFIER_NODE_TYPES = new Set<string>([
@@ -55,6 +70,12 @@ const IDENTIFIER_NODE_TYPES = new Set<string>([
   'property_identifier',
   'field_identifier',
   'type_identifier',
+  'simple_identifier',
+  'variable_name',
+  'constant',
+  'instance_variable',
+  'class_variable',
+  'global_variable',
   'shorthand_property_identifier_pattern',
 ]);
 
@@ -71,6 +92,23 @@ const PY_FUNCTION_SCOPE_TYPES = new Set<string>(['function_definition', 'async_f
 const RUST_METHOD_SCOPE_TYPES = new Set<string>(['impl_item', 'trait_item']);
 const C_TYPE_SCOPE_TYPES = new Set<string>(['struct_specifier', 'class_specifier']);
 const C_FUNCTION_DECLARATOR_TYPES = new Set<string>(['function_declarator']);
+const CSHARP_TYPE_SCOPE_TYPES = new Set<string>([
+  'class_declaration',
+  'struct_declaration',
+  'interface_declaration',
+  'record_declaration',
+]);
+const KOTLIN_TYPE_SCOPE_TYPES = new Set<string>([
+  'class_body',
+  'class_declaration',
+  'object_declaration',
+  'object_body',
+]);
+const KOTLIN_FUNCTION_SCOPE_TYPES = new Set<string>([
+  'function_declaration',
+  'lambda_literal',
+  'anonymous_function',
+]);
 
 class SymbolCollector {
   private readonly symbols: WorkerExtractedSymbol[] = [];
@@ -87,7 +125,7 @@ class SymbolCollector {
   }
 
   public add(name: string, line: number, kind: WorkerSymbolKind): void {
-    const normalized = name.trim();
+    const normalized = normalizeIdentifierName(name);
     if (!isValidIdentifier(normalized)) {
       return;
     }
@@ -114,6 +152,45 @@ class SymbolCollector {
   }
 }
 
+function normalizeIdentifierName(value: string): string {
+  let normalized = value.trim();
+  if (normalized.startsWith('@@')) {
+    normalized = normalized.slice(2);
+  } else if (normalized.startsWith('@') || normalized.startsWith('$')) {
+    normalized = normalized.slice(1);
+  }
+
+  return normalized;
+}
+
+function _testNormalizeIdentifierName(): void {
+  const cases: Array<{ input: string; expected: string }> = [
+    { input: '', expected: '' },
+    { input: '   ', expected: '' },
+    { input: '@', expected: '' },
+    { input: '@@', expected: '' },
+    { input: '$', expected: '' },
+    { input: '@foo', expected: 'foo' },
+    { input: '@@foo', expected: 'foo' },
+    { input: '$foo', expected: 'foo' },
+    { input: '  @bar  ', expected: 'bar' },
+    { input: 'baz', expected: 'baz' },
+  ];
+
+  for (const { input, expected } of cases) {
+    const actual = normalizeIdentifierName(input);
+    if (actual !== expected) {
+      throw new Error(
+        `normalizeIdentifierName test failed for input ${JSON.stringify(input)}: ` +
+        `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`
+      );
+    }
+  }
+}
+
+if (process.env.NODE_ENV === 'test' && process.env.SYMBOL_PRESCAN_TEST_NORMALIZE === '1') {
+  _testNormalizeIdentifierName();
+}
 const parserCache = new Map<string, Parser>();
 
 function isValidIdentifier(value: string): boolean {
@@ -135,6 +212,11 @@ function isValidIdentifier(value: string): boolean {
 
   for (let index = 1; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
+    const isTrailingMethodPunctuation = index === value.length - 1 && (code === 33 || code === 63);
+    if (isTrailingMethodPunctuation) {
+      continue;
+    }
+
     const isValid = (
       (code >= 65 && code <= 90)
       || (code >= 97 && code <= 122)
@@ -255,7 +337,7 @@ function findNameNode(node: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
   return undefined;
 }
 
-function collectIdentifierNodes(node: Parser.SyntaxNode | undefined, output: Parser.SyntaxNode[]): void {
+function collectIdentifierNodes(node: Parser.SyntaxNode | null | undefined, output: Parser.SyntaxNode[]): void {
   if (!node) {
     return;
   }
@@ -272,6 +354,126 @@ function collectIdentifierNodes(node: Parser.SyntaxNode | undefined, output: Par
 
     collectIdentifierNodes(child, output);
   }
+}
+
+function collectDeclaratorNames(node: Parser.SyntaxNode, declaratorType: string): Parser.SyntaxNode[] {
+  const names: Parser.SyntaxNode[] = [];
+
+  walkNamed(node, (entry) => {
+    if (entry.type !== declaratorType) {
+      return;
+    }
+
+    const nameNode = entry.childForFieldName('name') ?? findNameNode(entry);
+    if (!nameNode) {
+      return;
+    }
+
+    names.push(nameNode);
+  });
+
+  return names;
+}
+
+// Lightweight self-tests for collectDeclaratorNames. These are only executed in test environments.
+function selfTestCollectDeclaratorNames(): void {
+  type AnyNode = any;
+
+  const makeNode = (overrides: Partial<Parser.SyntaxNode>): Parser.SyntaxNode => {
+    const base: AnyNode = {
+      type: 'root',
+      childCount: 0,
+      namedChildCount: 0,
+      child() {
+        return null;
+      },
+      namedChild() {
+        return null;
+      },
+      childForFieldName() {
+        return null;
+      },
+    };
+
+    return Object.assign(base, overrides) as Parser.SyntaxNode;
+  };
+
+  // Multiple declarators with direct name field.
+  const id1 = makeNode({ type: 'identifier' });
+  const id2 = makeNode({ type: 'identifier' });
+
+  const declType = 'variable_declarator';
+
+  const decl1 = makeNode({
+    type: declType,
+    childForFieldName(name: string) {
+      return name === 'name' ? (id1 as AnyNode) : null;
+    },
+  });
+
+  const decl2 = makeNode({
+    type: declType,
+    childForFieldName(name: string) {
+      return name === 'name' ? (id2 as AnyNode) : null;
+    },
+  });
+
+  const decl3MissingName = makeNode({
+    type: declType,
+    // No 'name' field and no identifier children; should be ignored.
+  });
+
+  const rootMultiple = makeNode({
+    type: 'root',
+    namedChildCount: 3,
+    namedChild(index: number) {
+      if (index === 0) return decl1 as AnyNode;
+      if (index === 1) return decl2 as AnyNode;
+      if (index === 2) return decl3MissingName as AnyNode;
+      return null;
+    },
+  });
+
+  const namesMultiple = collectDeclaratorNames(rootMultiple, declType);
+  console.assert(namesMultiple.length === 2, 'Expected two names for multiple declarators');
+  console.assert(namesMultiple[0] === id1 && namesMultiple[1] === id2, 'Names should be collected in order');
+
+  // Nested declarator structure: root -> wrapper -> declarator (using findNameNode fallback).
+  const nestedId = makeNode({ type: 'identifier' });
+  const nestedDecl = makeNode({
+    type: declType,
+    childForFieldName() {
+      return null;
+    },
+    namedChildCount: 1,
+    namedChild(index: number) {
+      return index === 0 ? (nestedId as AnyNode) : null;
+    },
+  });
+
+  const wrapper = makeNode({
+    type: 'wrapper',
+    namedChildCount: 1,
+    namedChild(index: number) {
+      return index === 0 ? (nestedDecl as AnyNode) : null;
+    },
+  });
+
+  const rootNested = makeNode({
+    type: 'root',
+    namedChildCount: 1,
+    namedChild(index: number) {
+      return index === 0 ? (wrapper as AnyNode) : null;
+    },
+  });
+
+  const namesNested = collectDeclaratorNames(rootNested, declType);
+  console.assert(namesNested.length === 1, 'Expected one name for nested declarator');
+  console.assert(namesNested[0] === nestedId, 'Nested declarator name should be collected via findNameNode');
+}
+
+if (process.env.NODE_ENV === 'test') {
+  selfTestCollectDeclaratorNames();
 }
 
 function getDeclarationKeyword(node: Parser.SyntaxNode): 'const' | 'let' | 'var' | undefined {
@@ -674,6 +876,228 @@ function extractCStyleSymbols(root: Parser.SyntaxNode, collector: SymbolCollecto
   });
 }
 
+function extractCSharpSymbols(root: Parser.SyntaxNode, collector: SymbolCollector): void {
+  walkNamed(root, (node) => {
+    switch (node.type) {
+      case 'class_declaration':
+      case 'interface_declaration':
+      case 'struct_declaration':
+      case 'enum_declaration':
+      case 'record_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
+        break;
+      }
+      case 'method_declaration':
+      case 'constructor_declaration':
+      case 'destructor_declaration':
+      case 'operator_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
+        break;
+      }
+      case 'local_function_statement': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'function');
+        break;
+      }
+      case 'property_declaration':
+      case 'event_declaration':
+      case 'indexer_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'property');
+        break;
+      }
+      case 'field_declaration': {
+        const isConst = hasModifierToken(node, collector, 'const') || hasModifierToken(node, collector, 'readonly');
+        for (const nameNode of collectDeclaratorNames(node, 'variable_declarator')) {
+          const name = collector.readText(nameNode);
+          if (isConst || isUpperSnakeCase(name)) {
+            collector.add(name, nameNode.startPosition.row + 1, 'constant');
+          } else {
+            collector.add(name, nameNode.startPosition.row + 1, 'field');
+          }
+        }
+
+        break;
+      }
+      case 'local_declaration_statement':
+      case 'variable_declaration': {
+        for (const nameNode of collectDeclaratorNames(node, 'variable_declarator')) {
+          collector.addFromNode(nameNode, 'variable');
+        }
+
+        break;
+      }
+      case 'assignment_expression': {
+        const left = node.childForFieldName('left') ?? node.namedChild(0);
+        const receiver = left?.childForFieldName('object') ?? left?.childForFieldName('expression');
+        const member = left?.childForFieldName('name') ?? left?.childForFieldName('field') ?? findNameNode(left ?? node);
+        if (!receiver || !member) {
+          break;
+        }
+
+        const receiverText = collector.readText(receiver);
+        if (receiverText === 'this' || receiverText === 'base') {
+          collector.addFromNode(member, hasAncestorType(node, CSHARP_TYPE_SCOPE_TYPES) ? 'field' : 'property');
+        }
+
+        break;
+      }
+      default:
+        break;
+    }
+  });
+}
+
+function extractPhpSymbols(root: Parser.SyntaxNode, collector: SymbolCollector): void {
+  walkNamed(root, (node) => {
+    switch (node.type) {
+      case 'class_declaration':
+      case 'interface_declaration':
+      case 'trait_declaration':
+      case 'enum_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
+        break;
+      }
+      case 'method_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
+        break;
+      }
+      case 'function_definition': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'function');
+        break;
+      }
+      case 'property_declaration': {
+        const names: Parser.SyntaxNode[] = [];
+        collectIdentifierNodes(node, names);
+        for (const nameNode of names) {
+          const name = collector.readText(nameNode);
+          if (name.startsWith('$')) {
+            collector.add(name, nameNode.startPosition.row + 1, 'field');
+          }
+        }
+
+        break;
+      }
+      case 'const_declaration':
+      case 'const_element': {
+        const names: Parser.SyntaxNode[] = [];
+        collectIdentifierNodes(node, names);
+        for (const nameNode of names) {
+          collector.addFromNode(nameNode, 'constant');
+        }
+
+        break;
+      }
+      case 'assignment_expression': {
+        const left = node.childForFieldName('left') ?? node.namedChild(0);
+        if (!left) {
+          break;
+        }
+
+        const names: Parser.SyntaxNode[] = [];
+        collectIdentifierNodes(left, names);
+        for (const nameNode of names) {
+          const name = collector.readText(nameNode);
+          if (name.startsWith('$')) {
+            collector.add(name, nameNode.startPosition.row + 1, 'variable');
+          }
+        }
+
+        break;
+      }
+      default:
+        break;
+    }
+  });
+}
+
+function extractRubySymbols(root: Parser.SyntaxNode, collector: SymbolCollector): void {
+  walkNamed(root, (node) => {
+    switch (node.type) {
+      case 'class':
+      case 'module': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
+        break;
+      }
+      case 'method':
+      case 'singleton_method': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
+        break;
+      }
+      case 'assignment':
+      case 'operator_assignment': {
+        const left = node.childForFieldName('left') ?? node.childForFieldName('name') ?? node.namedChild(0);
+        const nameNode = left ? (left.childForFieldName('name') ?? findNameNode(left)) : undefined;
+        if (!nameNode) {
+          break;
+        }
+
+        const name = collector.readText(nameNode);
+        if (name.startsWith('@')) {
+          collector.add(name, nameNode.startPosition.row + 1, 'field');
+        } else if (/^[A-Z]/.test(name)) {
+          collector.add(name, nameNode.startPosition.row + 1, 'constant');
+        } else {
+          collector.add(name, nameNode.startPosition.row + 1, 'variable');
+        }
+
+        break;
+      }
+      default:
+        break;
+    }
+  });
+}
+
+function extractKotlinSymbols(root: Parser.SyntaxNode, collector: SymbolCollector): void {
+  walkNamed(root, (node) => {
+    switch (node.type) {
+      case 'class_declaration':
+      case 'object_declaration':
+      case 'interface_declaration':
+      case 'enum_declaration':
+      case 'type_alias': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
+        break;
+      }
+      case 'function_declaration': {
+        const inTypeScope = hasAncestorType(node, KOTLIN_TYPE_SCOPE_TYPES);
+        const inFunctionScope = hasAncestorType(node, KOTLIN_FUNCTION_SCOPE_TYPES);
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), inTypeScope && !inFunctionScope ? 'method' : 'function');
+        break;
+      }
+      case 'secondary_constructor':
+      case 'constructor_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
+        break;
+      }
+      case 'property_declaration': {
+        const nameNode = node.childForFieldName('name') ?? findNameNode(node);
+        if (!nameNode) {
+          break;
+        }
+
+        const declarationText = collector.readText(node);
+        const inTypeScope = hasAncestorType(node, KOTLIN_TYPE_SCOPE_TYPES);
+        const inFunctionScope = hasAncestorType(node, KOTLIN_FUNCTION_SCOPE_TYPES);
+        const isConst = /\bconst\b/.test(declarationText);
+        const isTopLevelVal = /\bval\b/.test(declarationText) && !inFunctionScope && !inTypeScope;
+        const name = collector.readText(nameNode);
+
+        if (inTypeScope && !inFunctionScope) {
+          collector.add(name, nameNode.startPosition.row + 1, 'field');
+        } else if (isConst || (isTopLevelVal && isUpperSnakeCase(name))) {
+          collector.add(name, nameNode.startPosition.row + 1, 'constant');
+        } else {
+          collector.add(name, nameNode.startPosition.row + 1, 'variable');
+        }
+
+        break;
+      }
+      default:
+        break;
+    }
+  });
+}
+
 function extractSymbols(filePath: string, content: string): WorkerExtractedSymbol[] {
   const extension = path.extname(filePath).toLowerCase();
   const parserInfo = getParserForExtension(extension);
@@ -708,6 +1132,18 @@ function extractSymbols(filePath: string, content: string): WorkerExtractedSymbo
       break;
     case 'c':
       extractCStyleSymbols(tree.rootNode, collector);
+      break;
+    case 'cs':
+      extractCSharpSymbols(tree.rootNode, collector);
+      break;
+    case 'php':
+      extractPhpSymbols(tree.rootNode, collector);
+      break;
+    case 'ruby':
+      extractRubySymbols(tree.rootNode, collector);
+      break;
+    case 'kotlin':
+      extractKotlinSymbols(tree.rootNode, collector);
       break;
     default:
       break;

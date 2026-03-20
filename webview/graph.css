@@ -308,10 +308,39 @@ button:disabled:hover {
 }
 
 #legend h3 {
-  margin: 0 0 7px;
+  margin: 0;
   font-size: 12px;
   letter-spacing: 0.02em;
   color: var(--vscode-descriptionForeground);
+}
+
+.legend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+#legend-content[hidden] {
+  display: none;
+}
+
+#legend[data-collapsed='true'] {
+  min-width: 0;
+  width: auto;
+}
+
+#legend[data-collapsed='true'] .legend-header {
+  margin-bottom: 0;
+}
+
+#legend-toggle {
+  min-height: 24px;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.1;
+  pointer-events: auto;
 }
 
 #legend ul {

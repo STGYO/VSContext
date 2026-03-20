@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.8
+
+- Expanded language coverage with parser-backed pre-scan support for C#, PHP, Ruby, and Kotlin
+- Expanded C/C++ source coverage for additional extensions (`.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`)
+- Added workspace scanning support for Swift files (indexed through VS Code document symbol providers)
+- Added legend visibility control in the graph panel with explicit `Hide Legend` and `Show Legend` states
+- Added Edge Budget tooltip guidance, including dynamic current-value context in the graph UI
+- Updated graph fallback template parity so legend toggle and Edge Budget tooltip behavior are consistent
+
 ## 0.1.7
 
 - Added a VSContext chat participant (`@vscontext`) for Copilot Chat with `/summary`, `/trace`, `/impact`, and `/help` commands

@@ -66,6 +66,17 @@ const PRE_SCAN_AST_EXTENSIONS = new Set([
     '.c',
     '.h',
     '.cpp',
+    '.cc',
+    '.cxx',
+    '.hpp',
+    '.hh',
+    '.hxx',
+    '.cs',
+    '.php',
+    '.phtml',
+    '.rb',
+    '.kt',
+    '.kts',
 ]);
 function serializeIndexedSymbol(symbol) {
     return {

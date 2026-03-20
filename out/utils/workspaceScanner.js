@@ -41,9 +41,9 @@ exports.getWorkspaceScanSettings = getWorkspaceScanSettings;
 exports.findWorkspaceSourceFiles = findWorkspaceSourceFiles;
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
-exports.SOURCE_INCLUDE_GLOB = '**/*.{ts,tsx,js,jsx,py,go,java,rs,cpp,c,h}';
+exports.SOURCE_INCLUDE_GLOB = '**/*.{ts,tsx,js,jsx,py,go,java,rs,cpp,cc,cxx,c,h,hpp,hh,hxx,cs,php,phtml,rb,kt,kts,swift}';
 exports.SOURCE_EXCLUDE_GLOB = '**/{node_modules,.git,dist,build,out,coverage,.venv,venv,__pycache__,site-packages}/**';
-const EXCLUDED_DIR_FILE_GLOB = '**/{node_modules,.git,dist,build,out,coverage,.venv,venv,__pycache__,site-packages}/**/*.{ts,tsx,js,jsx,py,go,java,rs,cpp,c,h}';
+const EXCLUDED_DIR_FILE_GLOB = '**/{node_modules,.git,dist,build,out,coverage,.venv,venv,__pycache__,site-packages}/**/*.{ts,tsx,js,jsx,py,go,java,rs,cpp,cc,cxx,c,h,hpp,hh,hxx,cs,php,phtml,rb,kt,kts,swift}';
 function getPrimaryWorkspaceFolder() {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {

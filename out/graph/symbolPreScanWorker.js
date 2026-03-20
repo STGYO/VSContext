@@ -38,11 +38,15 @@ const path = __importStar(require("path"));
 const worker_threads_1 = require("worker_threads");
 const Parser = require("tree-sitter");
 const C = require("tree-sitter-c");
+const CSharp = require("tree-sitter-c-sharp");
 const CPP = require("tree-sitter-cpp");
 const Go = require("tree-sitter-go");
 const Java = require("tree-sitter-java");
 const JavaScript = require("tree-sitter-javascript");
+const Kotlin = require("tree-sitter-kotlin");
+const PHP = require("tree-sitter-php");
 const Python = require("tree-sitter-python");
+const Ruby = require("tree-sitter-ruby");
 const Rust = require("tree-sitter-rust");
 const TypeScript = require("tree-sitter-typescript");
 const TS_LANGUAGES = TypeScript;
@@ -58,12 +62,29 @@ const LANGUAGE_BY_EXTENSION = {
     '.c': { language: C, family: 'c' },
     '.h': { language: CPP, family: 'c' },
     '.cpp': { language: CPP, family: 'c' },
+    '.cc': { language: CPP, family: 'c' },
+    '.cxx': { language: CPP, family: 'c' },
+    '.hpp': { language: CPP, family: 'c' },
+    '.hh': { language: CPP, family: 'c' },
+    '.hxx': { language: CPP, family: 'c' },
+    '.cs': { language: CSharp, family: 'cs' },
+    '.php': { language: PHP, family: 'php' },
+    '.phtml': { language: PHP, family: 'php' },
+    '.rb': { language: Ruby, family: 'ruby' },
+    '.kt': { language: Kotlin, family: 'kotlin' },
+    '.kts': { language: Kotlin, family: 'kotlin' },
 };
 const IDENTIFIER_NODE_TYPES = new Set([
     'identifier',
     'property_identifier',
     'field_identifier',
     'type_identifier',
+    'simple_identifier',
+    'variable_name',
+    'constant',
+    'instance_variable',
+    'class_variable',
+    'global_variable',
     'shorthand_property_identifier_pattern',
 ]);
 const TS_CLASS_SCOPE_TYPES = new Set(['class_body']);
@@ -79,6 +100,23 @@ const PY_FUNCTION_SCOPE_TYPES = new Set(['function_definition', 'async_function_
 const RUST_METHOD_SCOPE_TYPES = new Set(['impl_item', 'trait_item']);
 const C_TYPE_SCOPE_TYPES = new Set(['struct_specifier', 'class_specifier']);
 const C_FUNCTION_DECLARATOR_TYPES = new Set(['function_declarator']);
+const CSHARP_TYPE_SCOPE_TYPES = new Set([
+    'class_declaration',
+    'struct_declaration',
+    'interface_declaration',
+    'record_declaration',
+]);
+const KOTLIN_TYPE_SCOPE_TYPES = new Set([
+    'class_body',
+    'class_declaration',
+    'object_declaration',
+    'object_body',
+]);
+const KOTLIN_FUNCTION_SCOPE_TYPES = new Set([
+    'function_declaration',
+    'lambda_literal',
+    'anonymous_function',
+]);
 class SymbolCollector {
     content;
     symbols = [];
@@ -93,7 +131,7 @@ class SymbolCollector {
         this.add(this.readText(nameNode), nameNode.startPosition.row + 1, kind);
     }
     add(name, line, kind) {
-        const normalized = name.trim();
+        const normalized = normalizeIdentifierName(name);
         if (!isValidIdentifier(normalized)) {
             return;
         }
@@ -115,6 +153,40 @@ class SymbolCollector {
         return this.symbols;
     }
 }
+function normalizeIdentifierName(value) {
+    let normalized = value.trim();
+    if (normalized.startsWith('@@')) {
+        normalized = normalized.slice(2);
+    }
+    else if (normalized.startsWith('@') || normalized.startsWith('$')) {
+        normalized = normalized.slice(1);
+    }
+    return normalized;
+}
+function _testNormalizeIdentifierName() {
+    const cases = [
+        { input: '', expected: '' },
+        { input: '   ', expected: '' },
+        { input: '@', expected: '' },
+        { input: '@@', expected: '' },
+        { input: '$', expected: '' },
+        { input: '@foo', expected: 'foo' },
+        { input: '@@foo', expected: 'foo' },
+        { input: '$foo', expected: 'foo' },
+        { input: '  @bar  ', expected: 'bar' },
+        { input: 'baz', expected: 'baz' },
+    ];
+    for (const { input, expected } of cases) {
+        const actual = normalizeIdentifierName(input);
+        if (actual !== expected) {
+            throw new Error(`normalizeIdentifierName test failed for input ${JSON.stringify(input)}: ` +
+                `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+        }
+    }
+}
+if (process.env.NODE_ENV === 'test' && process.env.SYMBOL_PRESCAN_TEST_NORMALIZE === '1') {
+    _testNormalizeIdentifierName();
+}
 const parserCache = new Map();
 function isValidIdentifier(value) {
     if (value.length === 0) {
@@ -130,6 +202,10 @@ function isValidIdentifier(value) {
     }
     for (let index = 1; index < value.length; index += 1) {
         const code = value.charCodeAt(index);
+        const isTrailingMethodPunctuation = index === value.length - 1 && (code === 33 || code === 63);
+        if (isTrailingMethodPunctuation) {
+            continue;
+        }
         const isValid = ((code >= 65 && code <= 90)
             || (code >= 97 && code <= 122)
             || (code >= 48 && code <= 57)
@@ -238,6 +314,108 @@ function collectIdentifierNodes(node, output) {
         }
         collectIdentifierNodes(child, output);
     }
+}
+function collectDeclaratorNames(node, declaratorType) {
+    const names = [];
+    walkNamed(node, (entry) => {
+        if (entry.type !== declaratorType) {
+            return;
+        }
+        const nameNode = entry.childForFieldName('name') ?? findNameNode(entry);
+        if (!nameNode) {
+            return;
+        }
+        names.push(nameNode);
+    });
+    return names;
+}
+// Lightweight self-tests for collectDeclaratorNames. These are only executed in test environments.
+function selfTestCollectDeclaratorNames() {
+    const makeNode = (overrides) => {
+        const base = {
+            type: 'root',
+            childCount: 0,
+            namedChildCount: 0,
+            child() {
+                return null;
+            },
+            namedChild() {
+                return null;
+            },
+            childForFieldName() {
+                return null;
+            },
+        };
+        return Object.assign(base, overrides);
+    };
+    // Multiple declarators with direct name field.
+    const id1 = makeNode({ type: 'identifier' });
+    const id2 = makeNode({ type: 'identifier' });
+    const declType = 'variable_declarator';
+    const decl1 = makeNode({
+        type: declType,
+        childForFieldName(name) {
+            return name === 'name' ? id1 : null;
+        },
+    });
+    const decl2 = makeNode({
+        type: declType,
+        childForFieldName(name) {
+            return name === 'name' ? id2 : null;
+        },
+    });
+    const decl3MissingName = makeNode({
+        type: declType,
+        // No 'name' field and no identifier children; should be ignored.
+    });
+    const rootMultiple = makeNode({
+        type: 'root',
+        namedChildCount: 3,
+        namedChild(index) {
+            if (index === 0)
+                return decl1;
+            if (index === 1)
+                return decl2;
+            if (index === 2)
+                return decl3MissingName;
+            return null;
+        },
+    });
+    const namesMultiple = collectDeclaratorNames(rootMultiple, declType);
+    console.assert(namesMultiple.length === 2, 'Expected two names for multiple declarators');
+    console.assert(namesMultiple[0] === id1 && namesMultiple[1] === id2, 'Names should be collected in order');
+    // Nested declarator structure: root -> wrapper -> declarator (using findNameNode fallback).
+    const nestedId = makeNode({ type: 'identifier' });
+    const nestedDecl = makeNode({
+        type: declType,
+        childForFieldName() {
+            return null;
+        },
+        namedChildCount: 1,
+        namedChild(index) {
+            return index === 0 ? nestedId : null;
+        },
+    });
+    const wrapper = makeNode({
+        type: 'wrapper',
+        namedChildCount: 1,
+        namedChild(index) {
+            return index === 0 ? nestedDecl : null;
+        },
+    });
+    const rootNested = makeNode({
+        type: 'root',
+        namedChildCount: 1,
+        namedChild(index) {
+            return index === 0 ? wrapper : null;
+        },
+    });
+    const namesNested = collectDeclaratorNames(rootNested, declType);
+    console.assert(namesNested.length === 1, 'Expected one name for nested declarator');
+    console.assert(namesNested[0] === nestedId, 'Nested declarator name should be collected via findNameNode');
+}
+if (process.env.NODE_ENV === 'test') {
+    selfTestCollectDeclaratorNames();
 }
 function getDeclarationKeyword(node) {
     for (let index = 0; index < node.childCount; index += 1) {
@@ -601,6 +779,216 @@ function extractCStyleSymbols(root, collector) {
         }
     });
 }
+function extractCSharpSymbols(root, collector) {
+    walkNamed(root, (node) => {
+        switch (node.type) {
+            case 'class_declaration':
+            case 'interface_declaration':
+            case 'struct_declaration':
+            case 'enum_declaration':
+            case 'record_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
+                break;
+            }
+            case 'method_declaration':
+            case 'constructor_declaration':
+            case 'destructor_declaration':
+            case 'operator_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
+                break;
+            }
+            case 'local_function_statement': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'function');
+                break;
+            }
+            case 'property_declaration':
+            case 'event_declaration':
+            case 'indexer_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'property');
+                break;
+            }
+            case 'field_declaration': {
+                const isConst = hasModifierToken(node, collector, 'const') || hasModifierToken(node, collector, 'readonly');
+                for (const nameNode of collectDeclaratorNames(node, 'variable_declarator')) {
+                    const name = collector.readText(nameNode);
+                    if (isConst || isUpperSnakeCase(name)) {
+                        collector.add(name, nameNode.startPosition.row + 1, 'constant');
+                    }
+                    else {
+                        collector.add(name, nameNode.startPosition.row + 1, 'field');
+                    }
+                }
+                break;
+            }
+            case 'local_declaration_statement':
+            case 'variable_declaration': {
+                for (const nameNode of collectDeclaratorNames(node, 'variable_declarator')) {
+                    collector.addFromNode(nameNode, 'variable');
+                }
+                break;
+            }
+            case 'assignment_expression': {
+                const left = node.childForFieldName('left') ?? node.namedChild(0);
+                const receiver = left?.childForFieldName('object') ?? left?.childForFieldName('expression');
+                const member = left?.childForFieldName('name') ?? left?.childForFieldName('field') ?? findNameNode(left ?? node);
+                if (!receiver || !member) {
+                    break;
+                }
+                const receiverText = collector.readText(receiver);
+                if (receiverText === 'this' || receiverText === 'base') {
+                    collector.addFromNode(member, hasAncestorType(node, CSHARP_TYPE_SCOPE_TYPES) ? 'field' : 'property');
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    });
+}
+function extractPhpSymbols(root, collector) {
+    walkNamed(root, (node) => {
+        switch (node.type) {
+            case 'class_declaration':
+            case 'interface_declaration':
+            case 'trait_declaration':
+            case 'enum_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
+                break;
+            }
+            case 'method_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
+                break;
+            }
+            case 'function_definition': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'function');
+                break;
+            }
+            case 'property_declaration': {
+                const names = [];
+                collectIdentifierNodes(node, names);
+                for (const nameNode of names) {
+                    const name = collector.readText(nameNode);
+                    if (name.startsWith('$')) {
+                        collector.add(name, nameNode.startPosition.row + 1, 'field');
+                    }
+                }
+                break;
+            }
+            case 'const_declaration':
+            case 'const_element': {
+                const names = [];
+                collectIdentifierNodes(node, names);
+                for (const nameNode of names) {
+                    collector.addFromNode(nameNode, 'constant');
+                }
+                break;
+            }
+            case 'assignment_expression': {
+                const left = node.childForFieldName('left') ?? node.namedChild(0);
+                if (!left) {
+                    break;
+                }
+                const names = [];
+                collectIdentifierNodes(left, names);
+                for (const nameNode of names) {
+                    const name = collector.readText(nameNode);
+                    if (name.startsWith('$')) {
+                        collector.add(name, nameNode.startPosition.row + 1, 'variable');
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    });
+}
+function extractRubySymbols(root, collector) {
+    walkNamed(root, (node) => {
+        switch (node.type) {
+            case 'class':
+            case 'module': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
+                break;
+            }
+            case 'method':
+            case 'singleton_method': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
+                break;
+            }
+            case 'assignment':
+            case 'operator_assignment': {
+                const left = node.childForFieldName('left') ?? node.childForFieldName('name') ?? node.namedChild(0);
+                const nameNode = left ? (left.childForFieldName('name') ?? findNameNode(left)) : undefined;
+                if (!nameNode) {
+                    break;
+                }
+                const name = collector.readText(nameNode);
+                if (name.startsWith('@')) {
+                    collector.add(name, nameNode.startPosition.row + 1, 'field');
+                }
+                else if (/^[A-Z]/.test(name)) {
+                    collector.add(name, nameNode.startPosition.row + 1, 'constant');
+                }
+                else {
+                    collector.add(name, nameNode.startPosition.row + 1, 'variable');
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    });
+}
+function extractKotlinSymbols(root, collector) {
+    walkNamed(root, (node) => {
+        switch (node.type) {
+            case 'class_declaration':
+            case 'object_declaration':
+            case 'interface_declaration':
+            case 'enum_declaration':
+            case 'type_alias': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
+                break;
+            }
+            case 'function_declaration': {
+                const inTypeScope = hasAncestorType(node, KOTLIN_TYPE_SCOPE_TYPES);
+                const inFunctionScope = hasAncestorType(node, KOTLIN_FUNCTION_SCOPE_TYPES);
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), inTypeScope && !inFunctionScope ? 'method' : 'function');
+                break;
+            }
+            case 'secondary_constructor':
+            case 'constructor_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
+                break;
+            }
+            case 'property_declaration': {
+                const nameNode = node.childForFieldName('name') ?? findNameNode(node);
+                if (!nameNode) {
+                    break;
+                }
+                const declarationText = collector.readText(node);
+                const inTypeScope = hasAncestorType(node, KOTLIN_TYPE_SCOPE_TYPES);
+                const inFunctionScope = hasAncestorType(node, KOTLIN_FUNCTION_SCOPE_TYPES);
+                const isConst = /\bconst\b/.test(declarationText);
+                const isTopLevelVal = /\bval\b/.test(declarationText) && !inFunctionScope && !inTypeScope;
+                const name = collector.readText(nameNode);
+                if (inTypeScope && !inFunctionScope) {
+                    collector.add(name, nameNode.startPosition.row + 1, 'field');
+                }
+                else if (isConst || (isTopLevelVal && isUpperSnakeCase(name))) {
+                    collector.add(name, nameNode.startPosition.row + 1, 'constant');
+                }
+                else {
+                    collector.add(name, nameNode.startPosition.row + 1, 'variable');
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    });
+}
 function extractSymbols(filePath, content) {
     const extension = path.extname(filePath).toLowerCase();
     const parserInfo = getParserForExtension(extension);
@@ -633,6 +1021,18 @@ function extractSymbols(filePath, content) {
             break;
         case 'c':
             extractCStyleSymbols(tree.rootNode, collector);
+            break;
+        case 'cs':
+            extractCSharpSymbols(tree.rootNode, collector);
+            break;
+        case 'php':
+            extractPhpSymbols(tree.rootNode, collector);
+            break;
+        case 'ruby':
+            extractRubySymbols(tree.rootNode, collector);
+            break;
+        case 'kotlin':
+            extractKotlinSymbols(tree.rootNode, collector);
             break;
         default:
             break;

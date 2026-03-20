@@ -33,6 +33,17 @@ const PRE_SCAN_AST_EXTENSIONS = new Set<string>([
   '.c',
   '.h',
   '.cpp',
+  '.cc',
+  '.cxx',
+  '.hpp',
+  '.hh',
+  '.hxx',
+  '.cs',
+  '.php',
+  '.phtml',
+  '.rb',
+  '.kt',
+  '.kts',
 ]);
 
 type WorkerSymbolKind = 'function' | 'method' | 'class' | 'variable' | 'constant' | 'field' | 'property';
