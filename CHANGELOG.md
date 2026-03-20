@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.7
+
+- Added a VSContext chat participant (`@vscontext`) for Copilot Chat with `/summary`, `/trace`, `/impact`, and `/help` commands
+- Added compact graph-context generation with configurable budget tiers (`small`, `medium`, `large`)
+- Added balanced chat-context filtering with configurable denylist patterns (`vscontext.chatContextDenylist`)
+- Added symbol focus fallback for chat context: explicit node ID, active editor selection, VSContext tree selection, then prompt inference
+- Raised minimum VS Code engine requirement to `^1.95.0` for chat API compatibility
+
 ## 0.1.6
 
 - Added a single toolbar arrow toggle to hide/show top graph bars (up arrow when visible, down arrow when hidden)

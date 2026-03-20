@@ -1,7 +1,7 @@
 # VSContext
 
-![Version](https://img.shields.io/badge/version-0.1.6-2563eb)
-![VS Code](https://img.shields.io/badge/vscode-%5E1.80.0-007acc)
+![Version](https://img.shields.io/badge/version-0.1.7-2563eb)
+![VS Code](https://img.shields.io/badge/vscode-%5E1.95.0-007acc)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 
 VSContext is a VS Code extension for understanding large codebases faster.
@@ -53,6 +53,7 @@ VSContext is designed for day-to-day navigation, debugging, and refactoring supp
   - Sortable Node Details table
   - Text filtering for quick narrowing
   - Click and keyboard activation to open source
+- Copilot Chat integration with a dedicated `@vscontext` chat participant for graph-aware context answers
 
 ## Commands
 
@@ -109,6 +110,24 @@ The VSContext explorer includes:
   - `Trace Path`
   - `Impact`
 
+## Copilot Chat Context
+
+VSContext contributes a chat participant named `@vscontext` that uses indexed graph data as context in chat responses.
+
+Participant commands:
+
+- `/summary` for compact workspace structure context
+- `/trace` for downstream traversal context of a resolved symbol
+- `/impact` for upstream blast-radius context of a resolved symbol
+- `/help` for participant usage and symbol resolution hints
+
+Symbol resolution fallback order for `/trace` and `/impact`:
+
+1. `nodeId=<id>` explicitly in your prompt
+2. symbol under the active editor cursor
+3. last selected symbol in the VSContext tree
+4. symbol inferred from prompt text
+
 ## Analysis Workflows
 
 ### Execution Trace
@@ -155,7 +174,7 @@ Keyboard shortcuts in graph view:
 
 | Area | Support |
 | --- | --- |
-| VS Code Engine | `^1.80.0` |
+| VS Code Engine | `^1.95.0` |
 | TypeScript / TSX | Supported |
 | JavaScript / JSX | Supported |
 | Python | Supported |
@@ -206,6 +225,10 @@ You can configure VSContext in Settings (`settings.json`) using:
   - Maximum worker threads used for pre-scan processing.
 - `vscontext.debugSymbolDetection` (default: `false`)
   - Enables verbose indexing diagnostics in the VSContext output channel.
+- `vscontext.chatContextBudget` (default: `medium`, options: `small`, `medium`, `large`)
+  - Controls how much VSContext graph context is included in chat responses.
+- `vscontext.chatContextDenylist` (default: `[]`)
+  - Additional wildcard path patterns excluded from chat context generation.
 - `vscontext.maxScannedFiles` (deprecated)
   - Kept for backward compatibility. Use `vscontext.maxIndexedFiles`.
 
@@ -247,7 +270,7 @@ webview/
 
 - Node.js 18+
 - npm
-- VS Code 1.80+
+- VS Code 1.95+
 
 ### Build and Run
 

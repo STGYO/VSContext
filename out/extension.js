@@ -39,6 +39,7 @@ const crypto = __importStar(require("crypto"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const impactAnalysis_1 = require("./analysis/impactAnalysis");
+const chatParticipant_1 = require("./chat/chatParticipant");
 const executionTrace_1 = require("./analysis/executionTrace");
 const graphBuilder_1 = require("./graph/graphBuilder");
 const symbolIndexer_1 = require("./graph/symbolIndexer");
@@ -180,6 +181,19 @@ async function activate(context) {
             showCollapseAll: true,
         });
         context.subscriptions.push(treeView);
+        let lastSelectedNodeId;
+        context.subscriptions.push(treeView.onDidChangeSelection((event) => {
+            const selected = event.selection[0];
+            if (selected?.nodeId) {
+                lastSelectedNodeId = selected.nodeId;
+            }
+        }));
+        context.subscriptions.push((0, chatParticipant_1.registerVSContextChatParticipant)({
+            extensionUri: context.extensionUri,
+            graphBuilder,
+            logger,
+            getLastTreeSelectionNodeId: () => lastSelectedNodeId,
+        }));
         let refreshTimer;
         const pendingUpserts = new Set();
         const pendingDeletes = new Set();

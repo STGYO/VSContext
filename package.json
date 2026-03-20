@@ -2,7 +2,7 @@
   "name": "vscontext",
   "displayName": "VSContext",
   "description": "A stable VS Code extension for workspace symbol graphing, execution tracing, and impact analysis.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "ShriSrimoyTrivedy",
   "icon": "icon.png",
   "license": "MIT",
@@ -19,7 +19,7 @@
     "theme": "dark"
   },
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.95.0"
   },
   "main": "./out/extension.js",
   "activationEvents": [
@@ -53,6 +53,33 @@
         }
       ]
     },
+    "chatParticipants": [
+      {
+        "id": "vscontext.chat-assistant",
+        "name": "vscontext",
+        "fullName": "VSContext",
+        "description": "Use VSContext graph analysis as chat context.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "summary",
+            "description": "Generate a compact workspace structure summary from VSContext graph data."
+          },
+          {
+            "name": "trace",
+            "description": "Focus context on downstream execution traversal for the resolved symbol."
+          },
+          {
+            "name": "impact",
+            "description": "Focus context on upstream impact traversal for the resolved symbol."
+          },
+          {
+            "name": "help",
+            "description": "Show VSContext chat participant usage and focus resolution rules."
+          }
+        ]
+      }
+    ],
     "commands": [
       {
         "command": "vscontext.traceExecution",
@@ -143,6 +170,24 @@
           "type": "boolean",
           "default": false,
           "description": "Enable verbose symbol extraction, graph node creation, and tree node creation diagnostics in the VSContext output channel."
+        },
+        "vscontext.chatContextBudget": {
+          "type": "string",
+          "enum": [
+            "small",
+            "medium",
+            "large"
+          ],
+          "default": "medium",
+          "description": "Token budget used by VSContext chat context generation."
+        },
+        "vscontext.chatContextDenylist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional denylist patterns applied when generating VSContext chat context. Supports * wildcards."
         }
       }
     }
@@ -168,7 +213,7 @@
   ],
   "devDependencies": {
     "@types/node": "^20.17.50",
-    "@types/vscode": "^1.80.0",
+    "@types/vscode": "^1.95.0",
     "typescript": "^5.9.3",
     "vscode": "^1.1.37"
   },

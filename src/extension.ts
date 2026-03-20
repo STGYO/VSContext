@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { findImpactOfChange } from './analysis/impactAnalysis';
+import { registerVSContextChatParticipant } from './chat/chatParticipant';
 import { traceExecutionPath } from './analysis/executionTrace';
 import { WorkspaceGraphBuilder } from './graph/graphBuilder';
 import { SymbolIndexer } from './graph/symbolIndexer';
@@ -176,6 +177,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
 
     context.subscriptions.push(treeView);
+
+    let lastSelectedNodeId: string | undefined;
+    context.subscriptions.push(
+      treeView.onDidChangeSelection((event) => {
+        const selected = event.selection[0];
+        if (selected?.nodeId) {
+          lastSelectedNodeId = selected.nodeId;
+        }
+      }),
+    );
+
+    context.subscriptions.push(
+      registerVSContextChatParticipant({
+        extensionUri: context.extensionUri,
+        graphBuilder,
+        logger,
+        getLastTreeSelectionNodeId: () => lastSelectedNodeId,
+      }),
+    );
 
     let refreshTimer: NodeJS.Timeout | undefined;
     const pendingUpserts = new Set<string>();
