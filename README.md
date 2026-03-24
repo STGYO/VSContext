@@ -1,59 +1,49 @@
 # VSContext
 
-![Version](https://img.shields.io/badge/version-0.1.7-2563eb)
+![Version](https://img.shields.io/badge/version-0.1.8-2563eb)
 ![VS Code](https://img.shields.io/badge/vscode-%5E1.95.0-007acc)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 
-VSContext is a VS Code extension for understanding large codebases faster.
-It builds a workspace-level symbol graph, then lets you inspect behavior from a selected symbol using:
+VSContext is a VS Code extension for understanding large codebases with a persistent workspace symbol graph.  
+It indexes supported source files, builds symbol relationships, and exposes three practical workflows:
 
-- Execution Trace: explores downstream call flow from a symbol.
-- Impact Analysis: explores affected symbols around a selected point.
-- Code Graph View: opens an interactive workspace graph with layout, filtering, and clarity controls.
+- `Trace Path` for downstream execution traversal.
+- `Impact` for upstream blast-radius traversal.
+- `View Code Graph` for interactive, repository-level graph exploration.
 
-VSContext is designed for day-to-day navigation, debugging, and refactoring support across multi-language repositories.
+## Screenshots
 
-## Screenshot
+### Extension View
 
-![VSContext](icon.png)
+![VSContext Extension](assets/images/extension.png)
 
-## Why VSContext
+### Code Graph View
 
-- Reduces "where is this used?" hunting across large projects.
-- Gives a graph-first view before making risky changes.
-- Helps identify high-impact symbols during refactoring.
-- Keeps source-jump workflows fast from tree, tables, and graph nodes.
+![VSContext Graph](assets/images/graph.png)
 
-## Typical Use Cases
+## What Is New In 0.1.8
 
-- Refactoring safety checks before renaming or deleting shared symbols.
-- Onboarding into unfamiliar repositories by exploring architecture first.
-- Debugging side effects by tracing execution relationships from entry points.
-- Estimating change blast radius for release planning and code reviews.
-- Reviewing dependency structure in large mixed-language workspaces.
+- Expanded parser-backed pre-scan language coverage for C#, PHP, Ruby, and Kotlin.
+- Expanded C/C++ scan coverage to include `.cc`, `.cxx`, `.hpp`, `.hh`, and `.hxx`.
+- Added Swift file scanning via VS Code symbol providers (Tree-sitter pre-scan is not enabled for Swift on Windows).
+- Added graph legend toggle with explicit `Hide Legend` and `Show Legend` states.
+- Improved Edge Budget guidance and fallback template parity for graph webview controls.
 
-## Release Notes
+See [CHANGELOG.md](CHANGELOG.md) for full release history.
 
-- Latest updates are documented in [CHANGELOG.md](CHANGELOG.md).
+## Core Capabilities
 
-## Key Features
-
-- Workspace symbol indexing with grouped explorer views.
-- Sidebar actions from both view toolbar and symbol context menu.
-- Interactive graph view with:
-  - Mind Map and DAG layouts
-  - Direction toggle in DAG mode
-  - Edge budget controls for large graphs
-  - Edge-type visibility filters (calls, implements, reads, writes, file dependencies)
-  - Variable and structural-edge visibility toggles
-  - Smart label mode for dense views
-  - Overflow toolbar controls and top-bar hide/show toggle
-- Execution and impact panels with:
-  - Visual node-link traversal graph
-  - Sortable Node Details table
-  - Text filtering for quick narrowing
-  - Click and keyboard activation to open source
-- Copilot Chat integration with a dedicated `@vscontext` chat participant for graph-aware context answers
+- Workspace graph indexing with persisted cache hydration on startup.
+- Incremental graph updates on save/create/delete with debounced refresh.
+- Symbol relationship modeling for:
+  - calls
+  - implementations
+  - variable reads
+  - variable writes
+- Explorer tree grouped by file and symbol type with quick source navigation.
+- Analysis panels with traversal graph and sortable node tables.
+- Graph webview with Mind Map and DAG layouts, filtering, keyboard navigation, and progressive load for large graphs.
+- Copilot Chat participant `@vscontext` for graph-aware architecture context.
 
 ## Commands
 
@@ -61,118 +51,105 @@ VSContext is designed for day-to-day navigation, debugging, and refactoring supp
 - `VSContext: Impact`
 - `VSContext: View Code Graph`
 
-These commands are available from:
+Available from:
 
 - Command Palette
-- VSContext view title toolbar
-- Symbol context actions inside the VSContext tree
-
-## Installation
-
-### From Marketplace
-
-1. Open VS Code.
-2. Open Extensions (`Ctrl+Shift+X`).
-3. Search for `VSContext`.
-4. Select the extension and click Install.
-
-### Local Development Install
-
-1. Clone this repository.
-2. Run `npm install`.
-3. Run `npm run compile`.
-4. Press `F5` to open an Extension Development Host.
+- VSContext view toolbar
+- VSContext symbol context actions
 
 ## Quick Start
 
 1. Open a workspace containing supported source files.
-2. Open the VSContext activity bar icon.
-3. Wait for initial indexing to finish.
-4. Expand `Workspace` and browse `Files` or `Symbols`.
+2. Open the VSContext activity bar container.
+3. Wait for initial indexing or cache hydration.
+4. Browse `Workspace > Files` or `Symbols`.
 5. Select a symbol and run `Trace Path` or `Impact`.
-6. Open `View Code Graph` for repository-wide structure.
+6. Run `View Code Graph` for architecture-level view.
 
-## Sidebar Structure
+## Explorer Structure
 
-The VSContext explorer includes:
+- `Workspace`
+- `Files`:
+  - Per-file symbol groups with counts:
+    - `Functions`
+    - `Methods`
+    - `Classes`
+    - `Variables` (`Constants`, `Fields`, `Locals`)
+- `Symbols`:
+  - Global grouped symbols with counts:
+    - `Classes`
+    - `Functions`
+    - `Methods`
+    - `Variables` (`Constants`, `Fields`, `Locals`)
 
-- `Workspace` root item
-- `Files` view:
-  - Per-file symbol groups
-  - Functions, methods, classes, and variables (with counts)
-- `Symbols` view:
-  - Type-grouped global symbols (with counts)
-- Toolbar actions:
-  - `Trace Path`
-  - `Impact`
-  - `View Code Graph`
-- Symbol context actions:
-  - `Trace Path`
-  - `Impact`
-
-## Copilot Chat Context
-
-VSContext contributes a chat participant named `@vscontext` that uses indexed graph data as context in chat responses.
-
-Participant commands:
-
-- `/summary` for compact workspace structure context
-- `/trace` for downstream traversal context of a resolved symbol
-- `/impact` for upstream blast-radius context of a resolved symbol
-- `/help` for participant usage and symbol resolution hints
-
-Symbol resolution fallback order for `/trace` and `/impact`:
-
-1. `nodeId=<id>` explicitly in your prompt
-2. symbol under the active editor cursor
-3. last selected symbol in the VSContext tree
-4. symbol inferred from prompt text
+Each symbol item opens source directly and supports context actions for trace and impact analysis.
 
 ## Analysis Workflows
 
 ### Execution Trace
 
-Use this when you want to follow what may execute from a selected symbol.
+Use when you want downstream behavior from a starting symbol.
 
-- Start from a symbol in the tree.
-- Open `Trace Path`.
-- Inspect traversal graph and Node Details.
-- Click a row or graph node to open source.
+- Traverses outgoing relationships (`calls`, `implements`, `reads`, `writes`) with bounded BFS depth.
+- Shows interactive traversal graph and a Node Details table.
+- Opens source from graph nodes or table rows.
 
 ### Impact Analysis
 
-Use this when you want to estimate blast radius before changes.
+Use when you want upstream impact into a starting symbol.
 
-- Start from a symbol in the tree.
-- Open `Impact`.
-- Sort and filter affected nodes.
-- Jump directly to impacted symbols in editor.
+- Traverses incoming relationships using reverse edges.
+- Helps estimate blast radius before edits or refactors.
+- Supports filtering and direct source jump.
 
-### Code Graph View
+## Code Graph View
 
-Use this when you want workspace-level architecture context.
+Use when you want workspace-level topology.
 
-- Toggle view mode: Mind Map or DAG.
-- Toggle DAG direction when in DAG mode.
-- Use clarity controls to reduce visual noise.
-- Use the legend control to switch between `Hide Legend` and `Show Legend`.
-- Hover Edge Budget for guidance on performance versus relationship visibility.
-- Use edge filters to isolate relationship categories.
-- Hide/show top bars using arrow toggle.
+- View modes:
+  - `Mind Map`
+  - `DAG` (with direction toggle)
+- Filters and clarity controls:
+  - edge type toggles (`calls`, `implements`, `reads`, `writes`, `file-dependency`)
+  - variable visibility
+  - structural edge visibility
+  - smart labels
+  - edge budget slider
+- Large graph handling:
+  - progressively loads symbols
+  - includes `Load More` chunking for dense repositories
+- Interaction:
+  - Ctrl/Cmd+Click or Alt+Click to open source
+  - keyboard shortcuts:
+    - arrows: focus navigation
+    - `Enter`: open node
+    - `+` / `-`: zoom
+    - `F`: fit
+    - `V`: view mode toggle
+    - `D`: DAG direction toggle
+    - `/`: focus search
 
-Keyboard shortcuts in graph view:
+## Copilot Chat Integration
 
-- Arrow keys: move node focus
-- `Enter`: open focused node
-- `+` / `-`: zoom in/out
-- `F`: fit graph to viewport
-- `V`: toggle view mode
-- `D`: toggle DAG direction
-- `/`: focus search
+VSContext contributes `@vscontext` with commands:
 
-## Supported Language and Scan Scope
+- `/summary`
+- `/trace`
+- `/impact`
+- `/help`
 
-### Compatibility Matrix
+Focus resolution order for `/trace` and `/impact`:
+
+1. explicit `nodeId=<id>` in prompt
+2. active editor symbol under cursor
+3. last selected VSContext tree symbol
+4. inferred symbol from prompt text
+
+If no model is selected, VSContext returns the prepared graph summary directly.
+
+## Supported Files And Scan Scope
+
+### Compatibility
 
 | Area | Support |
 | --- | --- |
@@ -188,13 +165,13 @@ Keyboard shortcuts in graph view:
 | PHP | Supported |
 | Ruby | Supported |
 | Kotlin | Supported |
-| Swift | Supported |
+| Swift | Supported (provider-based indexing) |
 
-VSContext scans these source patterns:
+Scanned source patterns:
 
 - `**/*.ts`
-- `**/*.js`
 - `**/*.tsx`
+- `**/*.js`
 - `**/*.jsx`
 - `**/*.py`
 - `**/*.go`
@@ -216,42 +193,41 @@ VSContext scans these source patterns:
 - `**/*.kts`
 - `**/*.swift`
 
-Swift files are currently indexed through VS Code document symbol providers (AST pre-scan parser support is not enabled on Windows builds).
-
-VSContext ignores common generated/vendor folders:
+Excluded folders:
 
 - `node_modules`
 - `.git`
 - `dist`
 - `build`
 - `out`
+- `coverage`
 - `.venv`
 - `venv`
 - `__pycache__`
 - `site-packages`
 
-Discovery is enforced through `vscode.workspace.findFiles`.
+Discovery is performed with `vscode.workspace.findFiles`.
 
 ## Configuration
 
-You can configure VSContext in Settings (`settings.json`) using:
+Configure in `settings.json`:
 
-- `vscontext.maxIndexedFiles` (default: `2000`)
-  - Maximum number of workspace source files scanned for indexing.
-- `vscontext.refreshDebounceMs` (default: `300`)
-  - Debounce interval for graph refresh after file changes.
+- `vscontext.maxIndexedFiles` (default: `2000`, minimum: `100`)
+  - Maximum number of workspace source files indexed.
+- `vscontext.refreshDebounceMs` (default: `300`, minimum: `100`)
+  - Debounce interval for incremental refresh after workspace changes.
 - `vscontext.workerBatchSize` (default: `75`, range: `50-100`)
-  - Batch size used by worker pre-scan tasks.
+  - Batch size for worker pre-scan.
 - `vscontext.workerCount` (default: `4`, range: `1-8`)
-  - Maximum worker threads used for pre-scan processing.
+  - Maximum parallel pre-scan worker threads.
 - `vscontext.debugSymbolDetection` (default: `false`)
-  - Enables verbose indexing diagnostics in the VSContext output channel.
+  - Enables verbose symbol/index diagnostics in VSContext output channel.
 - `vscontext.chatContextBudget` (default: `medium`, options: `small`, `medium`, `large`)
-  - Controls how much VSContext graph context is included in chat responses.
+  - Controls summary budget for chat context generation.
 - `vscontext.chatContextDenylist` (default: `[]`)
-  - Additional wildcard path patterns excluded from chat context generation.
+  - Additional wildcard path patterns excluded from chat context.
 - `vscontext.maxScannedFiles` (deprecated)
-  - Kept for backward compatibility. Use `vscontext.maxIndexedFiles`.
+  - Backward-compatible alias. Prefer `vscontext.maxIndexedFiles`.
 
 ## Architecture Overview
 
@@ -261,7 +237,11 @@ src/
   analysis/
     executionTrace.ts
     impactAnalysis.ts
-  commands/
+  chat/
+    chatParticipant.ts
+    contextFilters.ts
+    contextSummary.ts
+    focusResolver.ts
   graph/
     graphBuilder.ts
     symbolIndexer.ts
@@ -297,27 +277,26 @@ webview/
 
 1. `npm install`
 2. `npm run compile`
-3. Press `F5` in VS Code
+3. Press `F5` in VS Code to launch Extension Development Host
 
-### Package a VSIX
+### Package VSIX
 
 1. Install VSCE if needed: `npm install -g @vscode/vsce`
 2. Build extension: `npm run compile`
 3. Package: `vsce package`
 
-This generates a `.vsix` artifact for local distribution.
-
 ## Troubleshooting
 
-- Graph appears sparse:
+- Graph is sparse:
   - Increase `vscontext.maxIndexedFiles`.
-  - Verify workspace contains supported file types.
-- Indexing feels slow on very large repos:
+  - Confirm workspace has supported file types.
+- Indexing is slow:
   - Tune `vscontext.workerCount` and `vscontext.workerBatchSize`.
-- Missing symbol details:
-  - Enable `vscontext.debugSymbolDetection` and inspect the VSContext output channel.
-- Graph too dense:
-  - Use edge filters, variable hiding, structural edge hiding, and search.
+- Expected symbols are missing:
+  - Enable `vscontext.debugSymbolDetection`.
+  - Check VSContext output channel diagnostics.
+- Graph is too dense:
+  - Use edge filters, variable/structural toggles, search, and edge budget.
 
 ## License
 
