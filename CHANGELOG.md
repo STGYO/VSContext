@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Added a local semantic indexing pipeline with chunked file records and symbol summaries
+- Added native VS Code workspace symbol queries to enrich retrieval results
+- Surfaced semantic matches in chat summaries to complement structural graph context
+
 ## 0.1.9
 
 - Added a shared knowledge-model schema for graph nodes and relationships so future test, documentation, API, and semantic layers can build on a stable core model

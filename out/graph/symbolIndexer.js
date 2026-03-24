@@ -182,9 +182,11 @@ class SymbolIndexer {
         const settings = (0, workspaceScanner_1.getWorkspaceScanSettings)();
         const indexed = new Map();
         try {
-            const scanResult = await (0, workspaceScanner_1.findWorkspaceSourceFiles)(settings.maxIndexedFiles);
+            const repositoryScan = await (0, workspaceScanner_1.findWorkspaceRepositoryFiles)(settings.maxIndexedFiles);
+            const scanResult = repositoryScan;
             this.logger.info(`[VSContext] Indexed ${scanResult.files.length} files selected for symbol extraction.`);
             this.logger.info(`[VSContext] Skipped dependency directories: ${scanResult.skippedByExclusions} files.`);
+            this.logger.info(`[VSContext] Repository roles: source=${repositoryScan.roleCounts.source}, test=${repositoryScan.roleCounts.test}, documentation=${repositoryScan.roleCounts.documentation}, template=${repositoryScan.roleCounts.template}, other=${repositoryScan.roleCounts.other}.`);
             if (scanResult.skippedByLimit > 0) {
                 this.logger.warn(`[VSContext] Skipped ${scanResult.skippedByLimit} files due to maxIndexedFiles limit.`);
             }
@@ -205,6 +207,7 @@ class SymbolIndexer {
                 indexedSymbolCount: indexed.size,
                 skippedByExclusions: scanResult.skippedByExclusions,
                 skippedByLimit: scanResult.skippedByLimit,
+                fileRoleSummary: repositoryScan.roleCounts,
             };
         }
         catch (error) {
@@ -216,6 +219,13 @@ class SymbolIndexer {
                 indexedSymbolCount: 0,
                 skippedByExclusions: 0,
                 skippedByLimit: 0,
+                fileRoleSummary: {
+                    source: 0,
+                    test: 0,
+                    documentation: 0,
+                    template: 0,
+                    other: 0,
+                },
             };
         }
     }

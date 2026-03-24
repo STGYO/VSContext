@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { Logger } from '../utils/logger';
 import {
   findWorkspaceSourceFiles,
+  findWorkspaceRepositoryFiles,
   getWorkspaceScanSettings,
   toWorkspaceRelativePath,
 } from '../utils/workspaceScanner';
@@ -223,6 +224,13 @@ export interface WorkspaceIndexResult {
   readonly indexedSymbolCount: number;
   readonly skippedByExclusions: number;
   readonly skippedByLimit: number;
+  readonly fileRoleSummary: {
+    readonly source: number;
+    readonly test: number;
+    readonly documentation: number;
+    readonly template: number;
+    readonly other: number;
+  };
 }
 
 export function createSymbolNodeId(uri: vscode.Uri, symbolName: string, startLineZeroBased: number): string {
@@ -237,9 +245,13 @@ export class SymbolIndexer {
     const indexed = new Map<string, IndexedSymbol>();
 
     try {
-      const scanResult = await findWorkspaceSourceFiles(settings.maxIndexedFiles);
+      const repositoryScan = await findWorkspaceRepositoryFiles(settings.maxIndexedFiles);
+      const scanResult = repositoryScan;
       this.logger.info(`[VSContext] Indexed ${scanResult.files.length} files selected for symbol extraction.`);
       this.logger.info(`[VSContext] Skipped dependency directories: ${scanResult.skippedByExclusions} files.`);
+      this.logger.info(
+        `[VSContext] Repository roles: source=${repositoryScan.roleCounts.source}, test=${repositoryScan.roleCounts.test}, documentation=${repositoryScan.roleCounts.documentation}, template=${repositoryScan.roleCounts.template}, other=${repositoryScan.roleCounts.other}.`,
+      );
       if (scanResult.skippedByLimit > 0) {
         this.logger.warn(`[VSContext] Skipped ${scanResult.skippedByLimit} files due to maxIndexedFiles limit.`);
       }
@@ -268,6 +280,7 @@ export class SymbolIndexer {
         indexedSymbolCount: indexed.size,
         skippedByExclusions: scanResult.skippedByExclusions,
         skippedByLimit: scanResult.skippedByLimit,
+        fileRoleSummary: repositoryScan.roleCounts,
       };
     } catch (error) {
       this.logger.error('Workspace symbol indexing failed.', error);
@@ -278,6 +291,13 @@ export class SymbolIndexer {
         indexedSymbolCount: 0,
         skippedByExclusions: 0,
         skippedByLimit: 0,
+        fileRoleSummary: {
+          source: 0,
+          test: 0,
+          documentation: 0,
+          template: 0,
+          other: 0,
+        },
       };
     }
   }

@@ -1,6 +1,6 @@
 # VSContext
 
-![Version](https://img.shields.io/badge/version-0.1.9-2563eb)
+![Version](https://img.shields.io/badge/version-0.2.0-2563eb)
 ![VS Code](https://img.shields.io/badge/vscode-%5E1.95.0-007acc)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 
@@ -20,6 +20,12 @@ It indexes supported source files, builds symbol relationships, and exposes thre
 ### Code Graph View
 
 ![VSContext Graph](assets/images/graph.png)
+
+## What Is New In 0.2.0
+
+- Added a local semantic indexing pipeline with chunked file records and symbol summaries.
+- Added native VS Code workspace symbol queries to enrich semantic search results.
+- Surfaced semantic matches in chat summaries for architecture context.
 
 ## What Is New In 0.1.9
 
@@ -108,7 +114,7 @@ Use when you want upstream impact into a starting symbol.
 - Helps estimate blast radius before edits or refactors.
 - Supports filtering and direct source jump.
 
-## Code Graph View
+## Code Graph Workflow
 
 Use when you want workspace-level topology.
 

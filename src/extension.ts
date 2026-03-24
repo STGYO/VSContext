@@ -7,6 +7,7 @@ import { registerVSContextChatParticipant } from './chat/chatParticipant';
 import { traceExecutionPath } from './analysis/executionTrace';
 import { WorkspaceGraphBuilder } from './graph/graphBuilder';
 import { SymbolIndexer } from './graph/symbolIndexer';
+import { WorkspaceSemanticIndexer } from './semantic/semanticIndexer';
 import { ContextTreeProvider } from './tree/contextTreeProvider';
 import { Logger } from './utils/logger';
 import { openGraphNodeInEditor, resolveSelectedSymbol } from './utils/symbolResolver';
@@ -167,6 +168,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const scanSettings = getWorkspaceScanSettings();
     const symbolIndexer = new SymbolIndexer(logger);
+    const semanticIndexer = new WorkspaceSemanticIndexer(logger);
     const cacheFileUri = createGraphCacheUri(context);
     const graphBuilder = new WorkspaceGraphBuilder(symbolIndexer, logger, cacheFileUri);
     const treeProvider = new ContextTreeProvider(graphBuilder, logger);
@@ -192,6 +194,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       registerVSContextChatParticipant({
         extensionUri: context.extensionUri,
         graphBuilder,
+        semanticIndexer,
         logger,
         getLastTreeSelectionNodeId: () => lastSelectedNodeId,
       }),

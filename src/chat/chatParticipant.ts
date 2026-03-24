@@ -6,10 +6,12 @@ import { Logger } from '../utils/logger';
 import { getChatContextSettings } from './contextFilters';
 import { resolveFocusNode } from './focusResolver';
 import { buildWorkspaceContextSummary } from './contextSummary';
+import { WorkspaceSemanticIndexer } from '../semantic/semanticIndexer';
 
 interface RegisterChatParticipantOptions {
   readonly extensionUri: vscode.Uri;
   readonly graphBuilder: WorkspaceGraphBuilder;
+  readonly semanticIndexer: WorkspaceSemanticIndexer;
   readonly logger: Logger;
   readonly getLastTreeSelectionNodeId: () => string | undefined;
 }
@@ -56,15 +58,32 @@ export function registerVSContextChatParticipant(
       focusNode,
     });
 
+    const semanticQuery = (focusNode?.symbolName || request.prompt).trim();
+    let semanticSummary = '';
+    if (semanticQuery.length > 0) {
+      const semanticResult = await options.semanticIndexer.search(graph, semanticQuery, {
+        focusNodeId: focusNode?.id,
+        maxResults: settings.budget === 'small' ? 4 : 6,
+      });
+
+      if (semanticResult.hits.length > 0) {
+        semanticSummary = options.semanticIndexer.formatSearchResult(semanticResult);
+      }
+    }
+
+    const combinedSummary = semanticSummary.length > 0
+      ? `${contextSummary}\n\n${semanticSummary}`
+      : contextSummary;
+
     const hasPromptText = request.prompt.trim().length > 0;
 
     if (command === 'summary' && !hasPromptText) {
-      stream.markdown(contextSummary);
+      stream.markdown(combinedSummary);
       return;
     }
 
     if (!request.model) {
-      stream.markdown(contextSummary);
+      stream.markdown(combinedSummary);
       return;
     }
 
@@ -77,7 +96,7 @@ export function registerVSContextChatParticipant(
             'You are assisting with software architecture analysis. Use the provided VSContext graph summary as structural context. If information is missing from the summary, state uncertainty explicitly.',
           ),
           vscode.LanguageModelChatMessage.User(
-            `VSContext summary:\n${contextSummary}\n\nUser request:\n${chatPrompt}\n\nAnswer the user request using only this summary as architecture context.`,
+            `VSContext summary:\n${combinedSummary}\n\nUser request:\n${chatPrompt}\n\nAnswer the user request using only this summary as architecture context.`,
           ),
         ],
         {},
@@ -90,7 +109,7 @@ export function registerVSContextChatParticipant(
     } catch (error) {
       options.logger.error('VSContext chat participant failed to send model request.', error);
       stream.markdown('The selected model did not complete this request. Here is the VSContext summary that was prepared:');
-      stream.markdown(contextSummary);
+      stream.markdown(combinedSummary);
     }
   };
 

@@ -39,11 +39,15 @@ exports.toWorkspaceRelativePath = toWorkspaceRelativePath;
 exports.toFileName = toFileName;
 exports.getWorkspaceScanSettings = getWorkspaceScanSettings;
 exports.findWorkspaceSourceFiles = findWorkspaceSourceFiles;
+exports.findWorkspaceRepositoryFiles = findWorkspaceRepositoryFiles;
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
+const fileRoleClassifier_1 = require("./fileRoleClassifier");
 exports.SOURCE_INCLUDE_GLOB = '**/*.{ts,tsx,js,jsx,py,go,java,rs,cpp,cc,cxx,c,h,hpp,hh,hxx,cs,php,phtml,rb,kt,kts,swift}';
 exports.SOURCE_EXCLUDE_GLOB = '**/{node_modules,.git,dist,build,out,coverage,.venv,venv,__pycache__,site-packages}/**';
 const EXCLUDED_DIR_FILE_GLOB = '**/{node_modules,.git,dist,build,out,coverage,.venv,venv,__pycache__,site-packages}/**/*.{ts,tsx,js,jsx,py,go,java,rs,cpp,cc,cxx,c,h,hpp,hh,hxx,cs,php,phtml,rb,kt,kts,swift}';
+const DOCUMENTATION_INCLUDE_GLOB = '**/*.{md,mdx,markdown,txt,rst,adoc}';
+const TEMPLATE_INCLUDE_GLOB = '**/*.{html,htm,jinja,jinja2,twig,hbs,handlebars,ejs,njk,vue,svelte,phtml}';
 function getPrimaryWorkspaceFolder() {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
@@ -77,23 +81,69 @@ function getWorkspaceScanSettings() {
     };
 }
 async function findWorkspaceSourceFiles(maxIndexedFiles) {
+    const result = await findWorkspaceRepositoryFiles(maxIndexedFiles);
+    return {
+        files: result.files,
+        totalCandidateFiles: result.totalCandidateFiles,
+        skippedByLimit: result.skippedByLimit,
+        skippedByExclusions: result.skippedByExclusions,
+    };
+}
+async function findWorkspaceRepositoryFiles(maxIndexedFiles) {
     if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
         return {
             files: [],
+            filesByRole: {
+                source: [],
+                test: [],
+                documentation: [],
+                template: [],
+                other: [],
+            },
+            roleCounts: (0, fileRoleClassifier_1.createEmptyWorkspaceFileRoleCounts)(),
             totalCandidateFiles: 0,
             skippedByLimit: 0,
             skippedByExclusions: 0,
         };
     }
-    const [allIncludedFiles, excludedFiles] = await Promise.all([
+    const [sourceFiles, documentationFiles, templateFiles, excludedFiles] = await Promise.all([
         vscode.workspace.findFiles(exports.SOURCE_INCLUDE_GLOB, exports.SOURCE_EXCLUDE_GLOB),
+        vscode.workspace.findFiles(DOCUMENTATION_INCLUDE_GLOB, exports.SOURCE_EXCLUDE_GLOB),
+        vscode.workspace.findFiles(TEMPLATE_INCLUDE_GLOB, exports.SOURCE_EXCLUDE_GLOB),
         vscode.workspace.findFiles(EXCLUDED_DIR_FILE_GLOB),
     ]);
-    const files = allIncludedFiles.slice(0, maxIndexedFiles);
+    const includedFiles = new Map();
+    const filesByRole = {
+        source: [],
+        test: [],
+        documentation: [],
+        template: [],
+        other: [],
+    };
+    let roleCounts = (0, fileRoleClassifier_1.createEmptyWorkspaceFileRoleCounts)();
+    for (const uri of [...sourceFiles, ...documentationFiles, ...templateFiles]) {
+        const key = uri.fsPath.toLowerCase();
+        if (includedFiles.has(key)) {
+            continue;
+        }
+        includedFiles.set(key, uri);
+        const role = (0, fileRoleClassifier_1.classifyWorkspaceFile)(uri);
+        filesByRole[role].push(uri);
+        roleCounts = (0, fileRoleClassifier_1.incrementWorkspaceFileRoleCounts)(roleCounts, role);
+    }
+    const files = sourceFiles.slice(0, maxIndexedFiles);
+    for (const uri of files) {
+        const role = (0, fileRoleClassifier_1.classifyWorkspaceFile)(uri);
+        if (!filesByRole[role].some((entry) => entry.fsPath === uri.fsPath)) {
+            filesByRole[role].push(uri);
+        }
+    }
     return {
         files,
-        totalCandidateFiles: allIncludedFiles.length,
-        skippedByLimit: Math.max(0, allIncludedFiles.length - files.length),
+        filesByRole,
+        roleCounts,
+        totalCandidateFiles: includedFiles.size,
+        skippedByLimit: Math.max(0, sourceFiles.length - files.length),
         skippedByExclusions: excludedFiles.length,
     };
 }

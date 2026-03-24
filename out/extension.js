@@ -43,6 +43,7 @@ const chatParticipant_1 = require("./chat/chatParticipant");
 const executionTrace_1 = require("./analysis/executionTrace");
 const graphBuilder_1 = require("./graph/graphBuilder");
 const symbolIndexer_1 = require("./graph/symbolIndexer");
+const semanticIndexer_1 = require("./semantic/semanticIndexer");
 const contextTreeProvider_1 = require("./tree/contextTreeProvider");
 const logger_1 = require("./utils/logger");
 const symbolResolver_1 = require("./utils/symbolResolver");
@@ -173,6 +174,7 @@ async function activate(context) {
         logger.info('Activating VSContext extension.');
         const scanSettings = (0, workspaceScanner_1.getWorkspaceScanSettings)();
         const symbolIndexer = new symbolIndexer_1.SymbolIndexer(logger);
+        const semanticIndexer = new semanticIndexer_1.WorkspaceSemanticIndexer(logger);
         const cacheFileUri = createGraphCacheUri(context);
         const graphBuilder = new graphBuilder_1.WorkspaceGraphBuilder(symbolIndexer, logger, cacheFileUri);
         const treeProvider = new contextTreeProvider_1.ContextTreeProvider(graphBuilder, logger);
@@ -191,6 +193,7 @@ async function activate(context) {
         context.subscriptions.push((0, chatParticipant_1.registerVSContextChatParticipant)({
             extensionUri: context.extensionUri,
             graphBuilder,
+            semanticIndexer,
             logger,
             getLastTreeSelectionNodeId: () => lastSelectedNodeId,
         }));

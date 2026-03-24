@@ -120,6 +120,12 @@ export async function buildWorkspaceContextSummary(
   lines.push(`- Node types: classes=${nodeTypeCounts.class}, functions=${nodeTypeCounts.function}, methods=${nodeTypeCounts.method}, variables=${nodeTypeCounts.variable}`);
   lines.push(`- Relationships: calls=${edgeCounts.calls}, implements=${edgeCounts.implements}, reads=${edgeCounts.reads}, writes=${edgeCounts.writes}`);
 
+  if (graph.fileRoleSummary) {
+    lines.push(
+      `- File roles: source=${graph.fileRoleSummary.source}, test=${graph.fileRoleSummary.test}, documentation=${graph.fileRoleSummary.documentation}, template=${graph.fileRoleSummary.template}, other=${graph.fileRoleSummary.other}`,
+    );
+  }
+
   lines.push('');
   lines.push('## Top Files By Symbol Density');
   if (topFiles.length === 0) {

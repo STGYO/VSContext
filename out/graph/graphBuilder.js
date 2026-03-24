@@ -49,6 +49,7 @@ class WorkspaceGraphBuilder {
         nodes: new Map(),
         fileIndex: new Map(),
         builtAt: undefined,
+        fileRoleSummary: undefined,
     };
     dirty = true;
     initialIndexCompleted = false;
@@ -139,6 +140,7 @@ class WorkspaceGraphBuilder {
             nodes: nodeMap,
             fileIndex: this.createFileIndex(nodeMap),
             builtAt: isBuiltAtValid ? builtAt : undefined,
+            fileRoleSummary: snapshot.fileRoleSummary,
         };
         this.symbolCache = restoredSymbolCache;
         this.fileModifiedTimes = this.deserializeFileModifiedTimes(snapshot.fileModifiedTimes);
@@ -249,6 +251,7 @@ class WorkspaceGraphBuilder {
                 nodes: nodeMap,
                 fileIndex,
                 builtAt: new Date(),
+                fileRoleSummary: indexResult.fileRoleSummary,
             };
             await this.refreshTrackedFileModifiedTimes(indexResult.scannedFiles);
             this.initialIndexCompleted = true;
@@ -264,6 +267,7 @@ class WorkspaceGraphBuilder {
                 nodes: new Map(),
                 fileIndex: new Map(),
                 builtAt: new Date(),
+                fileRoleSummary: undefined,
             };
             this.symbolCache = new Map();
             this.fileModifiedTimes = new Map();
@@ -487,6 +491,7 @@ class WorkspaceGraphBuilder {
             workspaceFolderUri: (0, workspaceScanner_1.getPrimaryWorkspaceFolder)()?.uri.toString(),
             savedAtIso: new Date().toISOString(),
             builtAtIso: this.cachedGraph.builtAt?.toISOString(),
+            fileRoleSummary: this.cachedGraph.fileRoleSummary,
             nodes: [...this.cachedGraph.nodes.values()].map((node) => this.serializeNode(node)),
             symbolCache: (0, symbolIndexer_1.serializeIndexedSymbolMap)(this.symbolCache),
             fileModifiedTimes: Object.fromEntries(this.fileModifiedTimes.entries()),
@@ -517,15 +522,37 @@ class WorkspaceGraphBuilder {
             return undefined;
         }
         const safeBuiltAtIso = typeof candidate.builtAtIso === 'string' ? candidate.builtAtIso : undefined;
+        const fileRoleSummary = this.parseFileRoleSummary(candidate.fileRoleSummary);
         return {
             version: candidate.version,
             knowledgeModelVersion: candidate.knowledgeModelVersion,
             workspaceFolderUri: safeWorkspaceUri,
             savedAtIso: safeSavedAtIso,
             builtAtIso: safeBuiltAtIso,
+            fileRoleSummary,
             nodes: candidate.nodes,
             symbolCache: candidate.symbolCache,
             fileModifiedTimes: candidate.fileModifiedTimes,
+        };
+    }
+    parseFileRoleSummary(value) {
+        if (!value || typeof value !== 'object') {
+            return undefined;
+        }
+        const candidate = value;
+        if (typeof candidate.source !== 'number'
+            || typeof candidate.test !== 'number'
+            || typeof candidate.documentation !== 'number'
+            || typeof candidate.template !== 'number'
+            || typeof candidate.other !== 'number') {
+            return undefined;
+        }
+        return {
+            source: candidate.source,
+            test: candidate.test,
+            documentation: candidate.documentation,
+            template: candidate.template,
+            other: candidate.other,
         };
     }
     serializeNode(node) {
@@ -661,6 +688,7 @@ class WorkspaceGraphBuilder {
         this.logger.info(`[VSContext] Indexed ${indexResult.scannedFileCount} files.`);
         this.logger.info(`[VSContext] Indexed ${indexResult.indexedSymbolCount} symbols.`);
         this.logger.info(`[VSContext] Skipped dependency directories: ${indexResult.skippedByExclusions} files.`);
+        this.logger.info(`[VSContext] File roles: source=${indexResult.fileRoleSummary.source}, test=${indexResult.fileRoleSummary.test}, documentation=${indexResult.fileRoleSummary.documentation}, template=${indexResult.fileRoleSummary.template}, other=${indexResult.fileRoleSummary.other}.`);
     }
     resolveNodeType(kind) {
         if (kind === vscode.SymbolKind.Class) {

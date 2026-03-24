@@ -12,6 +12,7 @@ import {
 } from './symbolIndexer';
 import { Logger } from '../utils/logger';
 import { getPrimaryWorkspaceFolder, toWorkspaceRelativePath } from '../utils/workspaceScanner';
+import type { WorkspaceFileRoleSummary } from '../utils/fileRoleClassifier';
 import { KNOWLEDGE_MODEL_VERSION, type KnowledgeNodeKind, type KnowledgeRelationshipKind } from './knowledgeModel';
 
 export type GraphNodeType = Extract<KnowledgeNodeKind, 'class' | 'function' | 'method' | 'variable'>;
@@ -53,6 +54,7 @@ export interface WorkspaceGraph {
   readonly nodes: Map<string, GraphNode>;
   readonly fileIndex: Map<string, string[]>;
   readonly builtAt: Date | undefined;
+  readonly fileRoleSummary?: WorkspaceFileRoleSummary;
 }
 
 interface SerializedGraphNode {
@@ -78,6 +80,7 @@ interface SerializedWorkspaceGraphSnapshot {
   readonly workspaceFolderUri: string | undefined;
   readonly savedAtIso: string;
   readonly builtAtIso: string | undefined;
+  readonly fileRoleSummary?: WorkspaceFileRoleSummary;
   readonly nodes: SerializedGraphNode[];
   readonly symbolCache: SerializedIndexedSymbol[];
   readonly fileModifiedTimes: Record<string, number>;
@@ -91,6 +94,7 @@ export class WorkspaceGraphBuilder {
     nodes: new Map<string, GraphNode>(),
     fileIndex: new Map<string, string[]>(),
     builtAt: undefined,
+    fileRoleSummary: undefined,
   };
 
   private dirty = true;
@@ -200,6 +204,7 @@ export class WorkspaceGraphBuilder {
       nodes: nodeMap,
       fileIndex: this.createFileIndex(nodeMap),
       builtAt: isBuiltAtValid ? builtAt : undefined,
+      fileRoleSummary: snapshot.fileRoleSummary,
     };
     this.symbolCache = restoredSymbolCache;
     this.fileModifiedTimes = this.deserializeFileModifiedTimes(snapshot.fileModifiedTimes);
@@ -333,6 +338,7 @@ export class WorkspaceGraphBuilder {
         nodes: nodeMap,
         fileIndex,
         builtAt: new Date(),
+        fileRoleSummary: indexResult.fileRoleSummary,
       };
 
       await this.refreshTrackedFileModifiedTimes(indexResult.scannedFiles);
@@ -349,6 +355,7 @@ export class WorkspaceGraphBuilder {
         nodes: new Map<string, GraphNode>(),
         fileIndex: new Map<string, string[]>(),
         builtAt: new Date(),
+        fileRoleSummary: undefined,
       };
       this.symbolCache = new Map<string, IndexedSymbol>();
       this.fileModifiedTimes = new Map<string, number>();
@@ -620,6 +627,7 @@ export class WorkspaceGraphBuilder {
       workspaceFolderUri: getPrimaryWorkspaceFolder()?.uri.toString(),
       savedAtIso: new Date().toISOString(),
       builtAtIso: this.cachedGraph.builtAt?.toISOString(),
+      fileRoleSummary: this.cachedGraph.fileRoleSummary,
       nodes: [...this.cachedGraph.nodes.values()].map((node) => this.serializeNode(node)),
       symbolCache: serializeIndexedSymbolMap(this.symbolCache),
       fileModifiedTimes: Object.fromEntries(this.fileModifiedTimes.entries()),
@@ -658,6 +666,7 @@ export class WorkspaceGraphBuilder {
     }
 
     const safeBuiltAtIso = typeof candidate.builtAtIso === 'string' ? candidate.builtAtIso : undefined;
+    const fileRoleSummary = this.parseFileRoleSummary(candidate.fileRoleSummary);
 
     return {
       version: candidate.version,
@@ -665,9 +674,35 @@ export class WorkspaceGraphBuilder {
       workspaceFolderUri: safeWorkspaceUri,
       savedAtIso: safeSavedAtIso,
       builtAtIso: safeBuiltAtIso,
+      fileRoleSummary,
       nodes: candidate.nodes as SerializedGraphNode[],
       symbolCache: candidate.symbolCache as SerializedIndexedSymbol[],
       fileModifiedTimes: candidate.fileModifiedTimes as Record<string, number>,
+    };
+  }
+
+  private parseFileRoleSummary(value: unknown): WorkspaceFileRoleSummary | undefined {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+
+    const candidate = value as Partial<WorkspaceFileRoleSummary>;
+    if (
+      typeof candidate.source !== 'number'
+      || typeof candidate.test !== 'number'
+      || typeof candidate.documentation !== 'number'
+      || typeof candidate.template !== 'number'
+      || typeof candidate.other !== 'number'
+    ) {
+      return undefined;
+    }
+
+    return {
+      source: candidate.source,
+      test: candidate.test,
+      documentation: candidate.documentation,
+      template: candidate.template,
+      other: candidate.other,
     };
   }
 
@@ -830,6 +865,9 @@ export class WorkspaceGraphBuilder {
     this.logger.info(`[VSContext] Indexed ${indexResult.scannedFileCount} files.`);
     this.logger.info(`[VSContext] Indexed ${indexResult.indexedSymbolCount} symbols.`);
     this.logger.info(`[VSContext] Skipped dependency directories: ${indexResult.skippedByExclusions} files.`);
+    this.logger.info(
+      `[VSContext] File roles: source=${indexResult.fileRoleSummary.source}, test=${indexResult.fileRoleSummary.test}, documentation=${indexResult.fileRoleSummary.documentation}, template=${indexResult.fileRoleSummary.template}, other=${indexResult.fileRoleSummary.other}.`,
+    );
   }
 
   private resolveNodeType(kind: vscode.SymbolKind): GraphNodeType {
