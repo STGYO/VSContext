@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9
+
+- Added a shared knowledge-model schema for graph nodes and relationships so future test, documentation, API, and semantic layers can build on a stable core model
+- Versioned persisted graph snapshots with explicit knowledge-model compatibility checks
+- Added graph payload metadata that exposes the active knowledge-model version and catalog to the code graph view
+
 ## 0.1.8
 
 - Expanded language coverage with parser-backed pre-scan support for C#, PHP, Ruby, and Kotlin

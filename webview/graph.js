@@ -35,6 +35,10 @@ const SEARCH_INPUT_DEBOUNCE_MS = 150;
 const LOW_DETAIL_ZOOM_THRESHOLD = 0.52;
 const LOW_DETAIL_NODE_THRESHOLD = 180;
 const LOW_DETAIL_EDGE_THRESHOLD = 420;
+const LARGE_GRAPH_NODE_THRESHOLD = 1200;
+const LARGE_GRAPH_EDGE_THRESHOLD = 4200;
+const LARGE_GRAPH_INITIAL_EDGE_BUDGET = 6000;
+const INTERACTION_EDGE_HIDE_IDLE_MS = 140;
 
 let adaptiveDetailRafId = null;
 let pendingAdaptiveDetailZoomLevel = null;
@@ -98,6 +102,7 @@ const LABEL_PREFIX = {
 const state = {
 	payload: undefined,
 	cy: undefined,
+	largeGraphMode: false,
 	collapsedCompoundIds: new Set(),
 	layoutDirection: 'TB',
 	layoutMode: 'mindmap',
@@ -136,6 +141,9 @@ const state = {
 	},
 	keyboardNodeId: '',
 	searchDebounceHandle: undefined,
+	interactionEdgeHideTimeout: undefined,
+	interactionEdgesHidden: false,
+	activeLayoutKind: 'mindmap',
 };
 
 const elements = {
@@ -263,12 +271,14 @@ bindClick(elements.collapseAll, () => {
 
 	applyCollapsedState();
 	runLayout(false);
+	setNotice(buildRenderNotice(getBaseLoadNotice()));
 });
 
 bindClick(elements.expandAll, () => {
 	state.collapsedCompoundIds.clear();
 	applyCollapsedState();
 	runLayout(false);
+	setNotice(buildRenderNotice(getBaseLoadNotice()));
 });
 
 bindClick(elements.legendToggle, () => {
@@ -279,13 +289,13 @@ bindClick(elements.legendToggle, () => {
 bindClick(elements.toggleContainment, () => {
 	state.view.hideStructuralEdges = !state.view.hideStructuralEdges;
 	updateFilterControlStates();
-	renderVisibleGraph();
+	renderVisibleGraph({ refreshElements: false, relayout: false });
 });
 
 bindClick(elements.toggleVariables, () => {
 	state.view.hideVariables = !state.view.hideVariables;
 	updateFilterControlStates();
-	renderVisibleGraph();
+	renderVisibleGraph({ refreshElements: false, relayout: false });
 });
 
 bindClick(elements.toggleSmartLabels, () => {
@@ -316,7 +326,7 @@ bindClick(elements.toggleEdgeFileDependency, () => {
 
 bindClick(elements.resetFilters, () => {
 	resetClarityControls();
-	renderVisibleGraph();
+	renderVisibleGraph({ refreshElements: false, relayout: false });
 });
 
 if (elements.edgeBudget) {
@@ -338,7 +348,7 @@ if (elements.edgeBudget) {
 
 		state.view.edgeBudget = clamp(Math.round(nextValue), MIN_EDGE_BUDGET, MAX_VISIBLE_EDGES);
 		updateEdgeBudgetLabel();
-		renderVisibleGraph();
+		renderVisibleGraph({ refreshElements: false, relayout: false });
 	});
 }
 
@@ -350,7 +360,7 @@ if (elements.searchInput) {
 
 		state.searchDebounceHandle = window.setTimeout(() => {
 			state.view.searchQuery = (elements.searchInput.value || '').trim();
-			renderVisibleGraph();
+			renderVisibleGraph({ refreshElements: false, relayout: false });
 		}, SEARCH_INPUT_DEBOUNCE_MS);
 	});
 }
@@ -387,6 +397,14 @@ function applyGraphPayload(payload, envelope) {
 
 	state.loadState = sanitizeLoadState(envelope && envelope.loadState);
 	state.totals = sanitizeTotals(envelope && envelope.totals, state.payload);
+	state.largeGraphMode = isLargeGraph(state.totals);
+	if (state.interactionEdgeHideTimeout) {
+		clearTimeout(state.interactionEdgeHideTimeout);
+		state.interactionEdgeHideTimeout = undefined;
+	}
+	state.interactionEdgesHidden = false;
+	resetClarityControls();
+	applyLargeGraphDefaults();
 
 	if (!state.cy) {
 		state.cy = createGraphInstance();
@@ -394,7 +412,7 @@ function applyGraphPayload(payload, envelope) {
 		syncLegendColors();
 	}
 
-	renderVisibleGraph();
+	renderVisibleGraph({ refreshElements: true, resetElements: true, relayout: true, forceFit: true });
 	updateLoadMoreButton();
 	updateZoomLevel(state.cy.zoom());
 }
@@ -422,8 +440,9 @@ function appendGraphPayload(payload, envelope) {
 
 	state.loadState = sanitizeLoadState(envelope && envelope.loadState);
 	state.totals = sanitizeTotals(envelope && envelope.totals, state.payload);
+	state.largeGraphMode = isLargeGraph(state.totals);
 
-	renderVisibleGraph();
+	renderVisibleGraph({ refreshElements: true, resetElements: false, relayout: true, forceFit: false });
 	updateLoadMoreButton();
 
 	const appendedNodeCount = Number.isFinite(envelope && envelope.appendedNodeCount)
@@ -457,6 +476,7 @@ function createGraphInstance() {
 		container: elements.graph,
 		elements: [],
 		wheelSensitivity: 0.34,
+		pixelRatio: state.largeGraphMode ? 1 : 'auto',
 		selectionType: 'single',
 		minZoom: MIN_ZOOM,
 		maxZoom: MAX_ZOOM,
@@ -677,7 +697,7 @@ function createGraphInstance() {
 				},
 			},
 			{
-				selector: '.compound-collapsed-hidden, .hidden-by-collapse',
+				selector: '.compound-collapsed-hidden, .hidden-by-collapse, .hidden-by-filter, .hidden-by-edge-budget, .hidden-by-viewport',
 				style: {
 					display: 'none',
 				},
@@ -725,6 +745,7 @@ function wireInteractions(cy) {
 
 		applyCollapsedState();
 		runLayout(false);
+		setNotice(buildRenderNotice(getBaseLoadNotice()));
 	});
 
 	cy.on('mouseover', 'node', (event) => {
@@ -753,10 +774,12 @@ function wireInteractions(cy) {
 	cy.on('zoom', () => {
 		scheduleAdaptiveDetailMode(cy.zoom());
 		hideTooltip();
+		scheduleViewportInteractionEdgeHiding();
 	});
 
 	cy.on('pan', () => {
 		hideTooltip();
+		scheduleViewportInteractionEdgeHiding();
 	});
 
 	bindWheelZoomBehavior();
@@ -979,13 +1002,21 @@ function moveKeyboardFocusByDirection(directionKey) {
 	}
 }
 
-function renderVisibleGraph() {
+function renderVisibleGraph(options = {}) {
 	if (!state.payload || !state.cy) {
 		return;
 	}
 
+	const refreshElements = Boolean(options.refreshElements);
+	const resetElements = Boolean(options.resetElements);
+	const relayout = Boolean(options.relayout);
+	const forceFit = Boolean(options.forceFit);
+
+	if (refreshElements) {
+		synchronizeCytoscapeElements(resetElements);
+	}
+
 	const filtered = computeFilteredGraphSnapshot();
-	const degreeByNodeId = buildNodeDegreeMap(filtered.visibleEdges);
 	state.viewStats = {
 		visibleNodeCount: filtered.visibleNodes.length,
 		visibleEdgeCount: filtered.visibleEdges.length,
@@ -993,55 +1024,111 @@ function renderVisibleGraph() {
 		truncatedByEdgeBudget: filtered.visibleEdges.length > filtered.renderedEdges.length,
 	};
 
-	const compoundNodes = buildCompoundNodeDefinitions(filtered.visibleNodes, state.payload.edges);
-	const nodeById = new Map(compoundNodes.map((node) => [node.id, node]));
-
-	const cytoscapeElements = [
-		...compoundNodes.map((node) => {
-			const parentId = node.parentId && nodeById.has(node.parentId) && node.parentId !== node.id
-				? node.parentId
-				: undefined;
-
-			return {
-				data: {
-					id: node.id,
-					parent: parentId,
-					label: buildNodeLabel(node),
-					degree: degreeByNodeId.get(node.id) || node.degree || 0,
-					type: node.type,
-					filePath: node.filePath,
-					uriString: node.uriString,
-					line: node.line,
-					rangeStartLine: node.rangeStartLine,
-					rangeStartCharacter: node.rangeStartCharacter,
-					rangeEndLine: node.rangeEndLine,
-					rangeEndCharacter: node.rangeEndCharacter,
-					fullName: node.name,
-				},
-			};
-		}),
-		...filtered.renderedEdges.map((edge) => ({
-			data: {
-				id: edge.id,
-				source: edge.source,
-				target: edge.target,
-				relationship: edge.relationship,
-				edgeType: edge.edgeType || edge.relationship,
-			},
-		})),
-	];
-
-	state.cy.batch(() => {
-		state.cy.elements().remove();
-		state.cy.add(cytoscapeElements);
-	});
+	applyVisibilityToElements(filtered);
 
 	updateSummary();
 	updateFilterControlStates();
 	setNotice(buildRenderNotice(getBaseLoadNotice()));
 	applyCollapsedState();
 	ensureKeyboardFocusNode();
-	runLayout(false);
+
+	if (relayout) {
+		runLayout(forceFit);
+		return;
+	}
+
+	applyAdaptiveDetailMode();
+}
+
+function synchronizeCytoscapeElements(resetElements) {
+	if (!state.payload || !state.cy) {
+		return;
+	}
+
+	const degreeByNodeId = buildNodeDegreeMap(state.payload.edges);
+	const compoundNodes = buildCompoundNodeDefinitions(state.payload.nodes, state.payload.edges);
+	const nodeById = new Map(compoundNodes.map((node) => [node.id, node]));
+
+	const nodeElements = compoundNodes.map((node) => toCytoscapeNodeElement(node, nodeById, degreeByNodeId));
+	const edgeElements = state.payload.edges.map((edge) => toCytoscapeEdgeElement(edge));
+
+	state.cy.batch(() => {
+		if (resetElements) {
+			state.cy.elements().remove();
+			state.cy.add([...nodeElements, ...edgeElements]);
+			return;
+		}
+
+		const existingNodeIds = new Set(state.cy.nodes().map((node) => node.id()));
+		const existingEdgeIds = new Set(state.cy.edges().map((edge) => edge.id()));
+		const nodesToAdd = nodeElements.filter((entry) => !existingNodeIds.has(entry.data.id));
+		const edgesToAdd = edgeElements.filter((entry) => !existingEdgeIds.has(entry.data.id));
+
+		if (nodesToAdd.length > 0 || edgesToAdd.length > 0) {
+			state.cy.add([...nodesToAdd, ...edgesToAdd]);
+		}
+	});
+}
+
+function toCytoscapeNodeElement(node, nodeById, degreeByNodeId) {
+	const parentId = node.parentId && nodeById.has(node.parentId) && node.parentId !== node.id
+		? node.parentId
+		: undefined;
+
+	return {
+		data: {
+			id: node.id,
+			parent: parentId,
+			label: buildNodeLabel(node),
+			degree: degreeByNodeId.get(node.id) || node.degree || 0,
+			type: node.type,
+			filePath: node.filePath,
+			uriString: node.uriString,
+			line: node.line,
+			rangeStartLine: node.rangeStartLine,
+			rangeStartCharacter: node.rangeStartCharacter,
+			rangeEndLine: node.rangeEndLine,
+			rangeEndCharacter: node.rangeEndCharacter,
+			fullName: node.name,
+		},
+	};
+}
+
+function toCytoscapeEdgeElement(edge) {
+	return {
+		data: {
+			id: edge.id,
+			source: edge.source,
+			target: edge.target,
+			relationship: edge.relationship,
+			edgeType: edge.edgeType || edge.relationship,
+		},
+	};
+}
+
+function applyVisibilityToElements(filtered) {
+	if (!state.cy) {
+		return;
+	}
+
+	state.cy.batch(() => {
+		state.cy.nodes().forEach((node) => {
+			const isVisible = filtered.visibleNodeIds.has(node.id());
+			node.toggleClass('hidden-by-filter', !isVisible);
+		});
+
+		state.cy.edges().forEach((edge) => {
+			const edgeId = edge.id();
+			const isVisible = filtered.visibleEdgeIds.has(edgeId);
+			const isRendered = filtered.renderedEdgeIds.has(edgeId);
+			const hiddenByFilter = !isVisible;
+			const hiddenByBudget = isVisible && !isRendered;
+
+			edge.toggleClass('hidden-by-filter', hiddenByFilter);
+			edge.toggleClass('hidden-by-edge-budget', hiddenByBudget);
+			edge.toggleClass('hidden-by-viewport', state.interactionEdgesHidden);
+		});
+	});
 }
 
 function computeFilteredGraphSnapshot() {
@@ -1096,11 +1183,17 @@ function computeFilteredGraphSnapshot() {
 	}
 
 	const renderedEdges = prioritizeEdges(filteredEdges, state.view.edgeBudget);
+	const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+	const visibleEdgeIds = new Set(filteredEdges.map((edge) => edge.id));
+	const renderedEdgeIds = new Set(renderedEdges.map((edge) => edge.id));
 
 	return {
 		visibleNodes,
 		visibleEdges: filteredEdges,
 		renderedEdges,
+		visibleNodeIds,
+		visibleEdgeIds,
+		renderedEdgeIds,
 	};
 }
 
@@ -1177,15 +1270,21 @@ function runLayout(forceFit) {
 		return;
 	}
 
-	const nodeCount = state.cy.nodes(':visible').length;
+	const layoutEles = state.cy.elements(':visible').not('.compound-collapsed-hidden');
+	const layoutNodes = layoutEles.nodes();
+	const nodeCount = layoutNodes.length;
 	if (nodeCount === 0) {
 		return;
 	}
 
+	const collapsedCount = state.collapsedCompoundIds.size;
+	const hasCollapsedGroups = collapsedCount > 0;
 	const shouldAnimate = nodeCount < 2200;
 	let layoutOptions;
+	let layoutTarget = layoutNodes;
 
 	if (state.layoutMode === 'dag' && state.dagreRegistered) {
+		state.activeLayoutKind = 'dag';
 		layoutOptions = {
 			name: 'dagre',
 			rankDir: state.layoutDirection,
@@ -1199,7 +1298,37 @@ function runLayout(forceFit) {
 			acyclicer: 'greedy',
 			ranker: 'network-simplex',
 		};
+		layoutTarget = layoutEles;
+	} else if (state.layoutMode === 'mindmap' && hasCollapsedGroups) {
+		state.activeLayoutKind = 'collapsed-grid';
+		const topLevelNodes = layoutNodes.filter((node) => !node.data('parent'));
+		layoutTarget = topLevelNodes.length > 0 ? topLevelNodes : layoutNodes;
+		const compactNodeCount = layoutTarget.length;
+		const gridColumns = Math.max(2, Math.ceil(Math.sqrt(compactNodeCount)));
+		layoutOptions = {
+			name: 'grid',
+			animate: false,
+			animationDuration: 0,
+			fit: true,
+			padding: 22,
+			avoidOverlap: true,
+			avoidOverlapPadding: 8,
+			nodeDimensionsIncludeLabels: true,
+			spacingFactor: 0.62,
+			condense: true,
+			rows: Math.ceil(compactNodeCount / gridColumns),
+			cols: gridColumns,
+			sort: (left, right) => {
+				const keyCompare = buildLayoutSortKey(left).localeCompare(buildLayoutSortKey(right));
+				if (keyCompare !== 0) {
+					return keyCompare;
+				}
+
+				return left.id().localeCompare(right.id());
+			},
+		};
 	} else {
+		state.activeLayoutKind = 'mindmap';
 		layoutOptions = {
 			name: 'concentric',
 			animate: shouldAnimate,
@@ -1218,10 +1347,16 @@ function runLayout(forceFit) {
 		};
 	}
 
-	const layout = state.cy.layout(layoutOptions);
+	const layout = layoutTarget.layout(layoutOptions);
 
 	layout.run();
 	applyAdaptiveDetailMode();
+	setNotice(buildRenderNotice(getBaseLoadNotice()));
+}
+
+function buildLayoutSortKey(node) {
+	const data = node.data();
+	return String(data.filePath || data.fullName || data.label || node.id()).toLowerCase();
 }
 
 function applyCollapsedState() {
@@ -1230,18 +1365,31 @@ function applyCollapsedState() {
 	}
 
 	const cy = state.cy;
-	cy.elements().removeClass('compound-collapsed compound-collapsed-hidden hidden-by-collapse');
+	cy.batch(() => {
+		cy.elements().removeClass('compound-collapsed compound-collapsed-hidden hidden-by-collapse');
 
-	cy.nodes(':parent').forEach((node) => {
-		const nodeId = node.id();
-		if (!state.collapsedCompoundIds.has(nodeId)) {
-			return;
-		}
+		cy.nodes(':parent').forEach((node) => {
+			const nodeId = node.id();
+			if (!state.collapsedCompoundIds.has(nodeId)) {
+				return;
+			}
 
-		const descendants = node.descendants();
-		node.addClass('compound-collapsed');
-		descendants.addClass('compound-collapsed-hidden');
-		descendants.connectedEdges().addClass('hidden-by-collapse');
+			const descendants = node.descendants();
+			const parentPosition = node.position();
+
+			// Compaction step: stack descendants onto the parent before hiding so
+			// compound bounds do not remain stretched by old descendant geometry.
+			descendants.nodes().forEach((descendant) => {
+				descendant.position({
+					x: parentPosition.x,
+					y: parentPosition.y,
+				});
+			});
+
+			node.addClass('compound-collapsed');
+			descendants.addClass('compound-collapsed-hidden');
+			descendants.connectedEdges().addClass('hidden-by-collapse');
+		});
 	});
 }
 
@@ -1310,7 +1458,9 @@ function updateSummary() {
 
 function getBaseLoadNotice() {
 	if (state.loadState.canLoadMore) {
-		return 'Large graph detected. Use Load More to fetch additional nodes.';
+		return state.largeGraphMode
+			? 'Large graph mode is active. Showing behavior-focused edges by default. Use Load More to fetch additional nodes.'
+			: 'Large graph detected. Use Load More to fetch additional nodes.';
 	}
 
 	if (state.loadState.wasTruncated) {
@@ -1322,6 +1472,10 @@ function getBaseLoadNotice() {
 
 function buildRenderNotice(baseMessage) {
 	const notes = [];
+
+	if (state.activeLayoutKind === 'collapsed-grid') {
+		notes.push('Collapsed grid layout active.');
+	}
 
 	if (state.viewStats.truncatedByEdgeBudget) {
 		notes.push(`Edge budget rendered ${state.viewStats.renderedEdgeCount}/${state.viewStats.visibleEdgeCount}.`);
@@ -1461,6 +1615,21 @@ function resetClarityControls() {
 	updateFilterControlStates();
 }
 
+function applyLargeGraphDefaults() {
+	if (!state.largeGraphMode) {
+		return;
+	}
+
+	state.view.edgeBudget = Math.max(MIN_EDGE_BUDGET, Math.min(MAX_VISIBLE_EDGES, LARGE_GRAPH_INITIAL_EDGE_BUDGET));
+	state.view.smartLabels = true;
+	state.view.edgeVisibility.calls = true;
+	state.view.edgeVisibility.implements = true;
+	state.view.edgeVisibility.reads = false;
+	state.view.edgeVisibility.writes = false;
+	state.view.edgeVisibility['file-dependency'] = false;
+	updateFilterControlStates();
+}
+
 function toggleEdgeVisibility(edgeType) {
 	if (!Object.prototype.hasOwnProperty.call(state.view.edgeVisibility, edgeType)) {
 		return;
@@ -1468,7 +1637,7 @@ function toggleEdgeVisibility(edgeType) {
 
 	state.view.edgeVisibility[edgeType] = !state.view.edgeVisibility[edgeType];
 	updateFilterControlStates();
-	renderVisibleGraph();
+	renderVisibleGraph({ refreshElements: false, relayout: false });
 }
 
 function updateEdgeToggleButton(button, label, edgeType) {
@@ -1497,7 +1666,12 @@ function applyAdaptiveDetailMode() {
 		return;
 	}
 
-	const shouldReduceDetail = cy.zoom() < LOW_DETAIL_ZOOM_THRESHOLD && nodes.length > LOW_DETAIL_NODE_THRESHOLD;
+	const zoomThreshold = state.largeGraphMode ? 0.72 : LOW_DETAIL_ZOOM_THRESHOLD;
+	const nodeThreshold = state.largeGraphMode ? 120 : LOW_DETAIL_NODE_THRESHOLD;
+	const edgeThreshold = state.largeGraphMode ? 300 : LOW_DETAIL_EDGE_THRESHOLD;
+	const emphasisDegreeThreshold = state.largeGraphMode ? 12 : 8;
+
+	const shouldReduceDetail = cy.zoom() < zoomThreshold && nodes.length > nodeThreshold;
 	if (!shouldReduceDetail) {
 		nodes.removeClass('label-hidden');
 		edges.removeClass('edge-low-detail');
@@ -1505,13 +1679,13 @@ function applyAdaptiveDetailMode() {
 	}
 
 	const emphasizedNodes = nodes
-		.filter((node) => node.isParent() || Number(node.data('degree') || 0) >= 8)
+		.filter((node) => node.isParent() || Number(node.data('degree') || 0) >= emphasisDegreeThreshold)
 		.union(cy.$('.is-focused').nodes());
 
 	nodes.addClass('label-hidden');
 	emphasizedNodes.removeClass('label-hidden');
 
-	if (edges.length > LOW_DETAIL_EDGE_THRESHOLD) {
+	if (edges.length > edgeThreshold) {
 		edges.addClass('edge-low-detail');
 	} else {
 		edges.removeClass('edge-low-detail');
@@ -1576,6 +1750,41 @@ function sanitizeTotals(totals, payload) {
 		totalNodeCount,
 		totalEdgeCount,
 	};
+}
+
+function isLargeGraph(totals) {
+	if (!totals) {
+		return false;
+	}
+
+	return totals.totalNodeCount >= LARGE_GRAPH_NODE_THRESHOLD || totals.totalEdgeCount >= LARGE_GRAPH_EDGE_THRESHOLD;
+}
+
+function scheduleViewportInteractionEdgeHiding() {
+	if (!state.cy || !state.largeGraphMode) {
+		return;
+	}
+
+	if (!state.interactionEdgesHidden) {
+		state.interactionEdgesHidden = true;
+		state.cy.edges().addClass('hidden-by-viewport');
+	}
+
+	if (state.interactionEdgeHideTimeout) {
+		clearTimeout(state.interactionEdgeHideTimeout);
+	}
+
+	state.interactionEdgeHideTimeout = window.setTimeout(() => {
+		state.interactionEdgeHideTimeout = undefined;
+		state.interactionEdgesHidden = false;
+
+		if (!state.cy) {
+			return;
+		}
+
+		state.cy.edges().removeClass('hidden-by-viewport');
+		applyAdaptiveDetailMode();
+	}, INTERACTION_EDGE_HIDE_IDLE_MS);
 }
 
 function bindOverflowMenuInteractions() {

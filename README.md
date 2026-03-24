@@ -1,6 +1,6 @@
 # VSContext
 
-![Version](https://img.shields.io/badge/version-0.1.8-2563eb)
+![Version](https://img.shields.io/badge/version-0.1.9-2563eb)
 ![VS Code](https://img.shields.io/badge/vscode-%5E1.95.0-007acc)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 
@@ -20,6 +20,12 @@ It indexes supported source files, builds symbol relationships, and exposes thre
 ### Code Graph View
 
 ![VSContext Graph](assets/images/graph.png)
+
+## What Is New In 0.1.9
+
+- Added a shared knowledge-model schema for current and future graph entities and relationship kinds.
+- Versioned graph cache snapshots with explicit knowledge-model compatibility checks.
+- Added graph payload metadata that advertises the active knowledge-model version and catalog.
 
 ## What Is New In 0.1.8
 

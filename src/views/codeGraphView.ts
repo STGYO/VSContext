@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { GraphNode, WorkspaceGraph, WorkspaceGraphBuilder } from '../graph/graphBuilder';
+import { KNOWLEDGE_MODEL_MANIFEST, KNOWLEDGE_MODEL_VERSION } from '../graph/knowledgeModel';
 import { Logger } from '../utils/logger';
 import { openGraphWebviewPanel } from './graphWebviewProvider';
 
@@ -56,6 +57,9 @@ export interface CodeGraphPayload {
   readonly edges: CodeGraphEdge[];
   readonly meta: {
     readonly generatedAt: string;
+    readonly knowledgeModelVersion: number;
+    readonly knowledgeNodeKinds: readonly string[];
+    readonly knowledgeRelationshipKinds: readonly string[];
     readonly symbolNodeCount: number;
     readonly fileNodeCount: number;
     readonly edgeCount: number;
@@ -235,6 +239,9 @@ function serializeWorkspaceGraph(graph: WorkspaceGraph): CodeGraphPayload {
     edges,
     meta: {
       generatedAt: new Date().toISOString(),
+      knowledgeModelVersion: KNOWLEDGE_MODEL_VERSION,
+      knowledgeNodeKinds: [...KNOWLEDGE_MODEL_MANIFEST.nodeKinds],
+      knowledgeRelationshipKinds: [...KNOWLEDGE_MODEL_MANIFEST.relationshipKinds],
       symbolNodeCount: graph.nodes.size,
       fileNodeCount: fileNodeByPath.size,
       edgeCount: edges.length,

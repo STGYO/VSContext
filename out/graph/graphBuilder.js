@@ -38,7 +38,8 @@ const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const symbolIndexer_1 = require("./symbolIndexer");
 const workspaceScanner_1 = require("../utils/workspaceScanner");
-const GRAPH_CACHE_VERSION = 2;
+const knowledgeModel_1 = require("./knowledgeModel");
+const GRAPH_CACHE_VERSION = 3;
 const PERSIST_DEBOUNCE_MS = 800;
 class WorkspaceGraphBuilder {
     indexer;
@@ -482,6 +483,7 @@ class WorkspaceGraphBuilder {
         await vscode.workspace.fs.createDirectory(directoryUri);
         const snapshot = {
             version: GRAPH_CACHE_VERSION,
+            knowledgeModelVersion: knowledgeModel_1.KNOWLEDGE_MODEL_VERSION,
             workspaceFolderUri: (0, workspaceScanner_1.getPrimaryWorkspaceFolder)()?.uri.toString(),
             savedAtIso: new Date().toISOString(),
             builtAtIso: this.cachedGraph.builtAt?.toISOString(),
@@ -500,6 +502,9 @@ class WorkspaceGraphBuilder {
         if (candidate.version !== GRAPH_CACHE_VERSION) {
             return undefined;
         }
+        if (candidate.knowledgeModelVersion !== knowledgeModel_1.KNOWLEDGE_MODEL_VERSION) {
+            return undefined;
+        }
         if (!Array.isArray(candidate.nodes) || !Array.isArray(candidate.symbolCache)) {
             return undefined;
         }
@@ -514,6 +519,7 @@ class WorkspaceGraphBuilder {
         const safeBuiltAtIso = typeof candidate.builtAtIso === 'string' ? candidate.builtAtIso : undefined;
         return {
             version: candidate.version,
+            knowledgeModelVersion: candidate.knowledgeModelVersion,
             workspaceFolderUri: safeWorkspaceUri,
             savedAtIso: safeSavedAtIso,
             builtAtIso: safeBuiltAtIso,

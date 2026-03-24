@@ -12,10 +12,11 @@ import {
 } from './symbolIndexer';
 import { Logger } from '../utils/logger';
 import { getPrimaryWorkspaceFolder, toWorkspaceRelativePath } from '../utils/workspaceScanner';
+import { KNOWLEDGE_MODEL_VERSION, type KnowledgeNodeKind, type KnowledgeRelationshipKind } from './knowledgeModel';
 
-export type GraphNodeType = 'class' | 'function' | 'method' | 'variable';
+export type GraphNodeType = Extract<KnowledgeNodeKind, 'class' | 'function' | 'method' | 'variable'>;
 
-export type GraphEdgeType = 'calls' | 'implements' | 'reads' | 'writes';
+export type GraphEdgeType = Extract<KnowledgeRelationshipKind, 'calls' | 'implements' | 'reads' | 'writes'>;
 
 export interface GraphEdge {
   readonly from: string;
@@ -73,6 +74,7 @@ interface SerializedGraphNode {
 
 interface SerializedWorkspaceGraphSnapshot {
   readonly version: number;
+  readonly knowledgeModelVersion: number;
   readonly workspaceFolderUri: string | undefined;
   readonly savedAtIso: string;
   readonly builtAtIso: string | undefined;
@@ -81,7 +83,7 @@ interface SerializedWorkspaceGraphSnapshot {
   readonly fileModifiedTimes: Record<string, number>;
 }
 
-const GRAPH_CACHE_VERSION = 2;
+const GRAPH_CACHE_VERSION = 3;
 const PERSIST_DEBOUNCE_MS = 800;
 
 export class WorkspaceGraphBuilder {
@@ -614,6 +616,7 @@ export class WorkspaceGraphBuilder {
 
     const snapshot: SerializedWorkspaceGraphSnapshot = {
       version: GRAPH_CACHE_VERSION,
+      knowledgeModelVersion: KNOWLEDGE_MODEL_VERSION,
       workspaceFolderUri: getPrimaryWorkspaceFolder()?.uri.toString(),
       savedAtIso: new Date().toISOString(),
       builtAtIso: this.cachedGraph.builtAt?.toISOString(),
@@ -636,6 +639,10 @@ export class WorkspaceGraphBuilder {
       return undefined;
     }
 
+    if (candidate.knowledgeModelVersion !== KNOWLEDGE_MODEL_VERSION) {
+      return undefined;
+    }
+
     if (!Array.isArray(candidate.nodes) || !Array.isArray(candidate.symbolCache)) {
       return undefined;
     }
@@ -654,6 +661,7 @@ export class WorkspaceGraphBuilder {
 
     return {
       version: candidate.version,
+      knowledgeModelVersion: candidate.knowledgeModelVersion,
       workspaceFolderUri: safeWorkspaceUri,
       savedAtIso: safeSavedAtIso,
       builtAtIso: safeBuiltAtIso,
