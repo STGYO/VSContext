@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { GraphNode, WorkspaceGraph } from '../graph/graphBuilder';
@@ -542,8 +543,143 @@ function buildRecord(input: {
 }
 
 function buildChunkSummary(filePath: string, role: WorkspaceFileRole, chunkNumber: number, chunkCount: number, chunk: { text: string }): string {
-  const preview = chunk.text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(0, 4).join(' | ');
+  switch (role) {
+    case 'documentation':
+      return buildDocumentationChunkSummary(filePath, chunkNumber, chunkCount, chunk.text);
+    case 'test':
+      return buildTestChunkSummary(filePath, chunkNumber, chunkCount, chunk.text);
+    case 'template':
+      return buildTemplateChunkSummary(filePath, chunkNumber, chunkCount, chunk.text);
+    default:
+      return buildSourceChunkSummary(filePath, role, chunkNumber, chunkCount, chunk.text);
+  }
+}
+
+function buildSourceChunkSummary(filePath: string, role: WorkspaceFileRole, chunkNumber: number, chunkCount: number, text: string): string {
+  const preview = text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(0, 4).join(' | ');
   return `${role} file chunk ${chunkNumber}/${chunkCount} from ${filePath}${preview ? `: ${preview}` : ''}`;
+}
+
+function buildDocumentationChunkSummary(filePath: string, chunkNumber: number, chunkCount: number, text: string): string {
+  const headings = extractDocumentationHeadings(text).slice(0, 3);
+  const links = extractLocalLinks(text).slice(0, 3);
+  const fragments: string[] = [`documentation chunk ${chunkNumber}/${chunkCount} from ${filePath}`];
+
+  if (headings.length > 0) {
+    fragments.push(`headings: ${headings.join(' | ')}`);
+  }
+
+  if (links.length > 0) {
+    fragments.push(`links: ${links.join(' | ')}`);
+  }
+
+  return fragments.join(': ');
+}
+
+function buildTestChunkSummary(filePath: string, chunkNumber: number, chunkCount: number, text: string): string {
+  const testNames = extractTestNames(text).slice(0, 4);
+  const targetHints = extractTestTargetHints(filePath, text).slice(0, 3);
+  const fragments: string[] = [`test chunk ${chunkNumber}/${chunkCount} from ${filePath}`];
+
+  if (testNames.length > 0) {
+    fragments.push(`tests: ${testNames.join(' | ')}`);
+  }
+
+  if (targetHints.length > 0) {
+    fragments.push(`targets: ${targetHints.join(' | ')}`);
+  }
+
+  return fragments.join(': ');
+}
+
+function buildTemplateChunkSummary(filePath: string, chunkNumber: number, chunkCount: number, text: string): string {
+  const includes = extractTemplateReferences(text).slice(0, 3);
+  const fragments: string[] = [`template chunk ${chunkNumber}/${chunkCount} from ${filePath}`];
+
+  if (includes.length > 0) {
+    fragments.push(`references: ${includes.join(' | ')}`);
+  }
+
+  const preview = text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(0, 2).join(' | ');
+  if (preview.length > 0) {
+    fragments.push(preview);
+  }
+
+  return fragments.join(': ');
+}
+
+function extractDocumentationHeadings(text: string): string[] {
+  const headings = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^\s{0,3}#{1,6}\s+(.+)$/);
+    if (match?.[1]) {
+      headings.add(match[1].trim());
+    }
+  }
+
+  return [...headings];
+}
+
+function extractLocalLinks(text: string): string[] {
+  const links = new Set<string>();
+  for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+    const target = match[1]?.trim();
+    if (target && isLikelyLocalTextReference(target)) {
+      links.add(target);
+    }
+  }
+
+  return [...links];
+}
+
+function extractTestNames(text: string): string[] {
+  const names = new Set<string>();
+  for (const match of text.matchAll(/\b(?:describe|it|test|spec)\s*\(\s*["'`]([^"'`]+)["'`]/g)) {
+    if (match[1]) {
+      names.add(match[1].trim());
+    }
+  }
+
+  return [...names];
+}
+
+function extractTestTargetHints(filePath: string, text: string): string[] {
+  const hints = new Set<string>();
+  const fileName = path.posix.basename(filePath.replace(/\\/g, '/'));
+  const baseName = fileName.replace(/\.[^.]+$/, '').replace(/(?:\.|-|_)?(?:test|spec)$/i, '');
+  if (baseName.length > 0) {
+    hints.add(baseName);
+  }
+
+  for (const match of text.matchAll(/\b(?:import|from|require)\b[^\n]*["'`]([^"'`]+)["'`]/g)) {
+    const target = match[1]?.trim();
+    if (target && isLikelyLocalTextReference(target)) {
+      hints.add(target);
+    }
+  }
+
+  return [...hints];
+}
+
+function extractTemplateReferences(text: string): string[] {
+  const references = new Set<string>();
+  for (const match of text.matchAll(/\b(?:include|extends|partial)\s+["']([^"']+)["']/g)) {
+    if (match[1] && isLikelyLocalTextReference(match[1])) {
+      references.add(match[1].trim());
+    }
+  }
+
+  for (const match of text.matchAll(/\b(?:src|href)\s*=\s*["']([^"']+)["']/g)) {
+    if (match[1] && isLikelyLocalTextReference(match[1])) {
+      references.add(match[1].trim());
+    }
+  }
+
+  return [...references];
+}
+
+function isLikelyLocalTextReference(value: string): boolean {
+  return value.startsWith('.') || value.startsWith('/') || value.includes('/');
 }
 
 function buildSymbolSummary(node: GraphNode, graph: WorkspaceGraph): string {

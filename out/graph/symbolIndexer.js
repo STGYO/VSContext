@@ -208,6 +208,7 @@ class SymbolIndexer {
             return {
                 indexed,
                 scannedFiles: scanResult.files,
+                filesByRole: repositoryScan.filesByRole,
                 scannedFileCount: scanResult.files.length,
                 indexedSymbolCount: indexed.size,
                 skippedByExclusions: scanResult.skippedByExclusions,
@@ -220,6 +221,13 @@ class SymbolIndexer {
             return {
                 indexed,
                 scannedFiles: [],
+                filesByRole: {
+                    source: [],
+                    test: [],
+                    documentation: [],
+                    template: [],
+                    other: [],
+                },
                 scannedFileCount: 0,
                 indexedSymbolCount: 0,
                 skippedByExclusions: 0,

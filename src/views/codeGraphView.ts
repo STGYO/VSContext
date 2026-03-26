@@ -19,7 +19,11 @@ export type CodeGraphRelationship =
   | 'implements'
   | 'reads'
   | 'writes'
-  | 'file-dependency';
+  | 'file-dependency'
+  | 'imports'
+  | 'covers'
+  | 'documents'
+  | 'related-to';
 
 export interface NodeNavigationTarget {
   readonly uriString: string;
@@ -98,10 +102,7 @@ function serializeWorkspaceGraph(graph: WorkspaceGraph): CodeGraphPayload {
   const degreeByNodeId = new Map<string, number>();
   const fileNodeByPath = new Map<string, FileNodeInfo>();
 
-  const sortedFilePaths = [...graph.fileIndex.keys()].sort((left, right) => left.localeCompare(right));
-
-  for (const filePath of sortedFilePaths) {
-    const nodeIds = graph.fileIndex.get(filePath) ?? [];
+  for (const [filePath, nodeIds] of graph.fileIndex) {
     const symbols = nodeIds
       .map((nodeId) => graph.nodes.get(nodeId))
       .filter((node): node is GraphNode => node !== undefined);
@@ -110,19 +111,36 @@ function serializeWorkspaceGraph(graph: WorkspaceGraph): CodeGraphPayload {
       continue;
     }
 
-    const firstSymbol = symbols[0];
-    const fileNodeId = `file::${filePath}`;
     fileNodeByPath.set(filePath, {
-      id: fileNodeId,
-      uriString: firstSymbol.uriString,
+      id: `file::${filePath}`,
+      uriString: symbols[0].uriString,
     });
+  }
+
+  for (const relationship of graph.fileRelationships) {
+    ensureFileNodeInfo(fileNodeByPath, relationship.sourceFilePath, relationship.sourceUriString);
+    ensureFileNodeInfo(fileNodeByPath, relationship.targetFilePath, relationship.targetUriString);
+  }
+
+  const sortedFilePaths = [...fileNodeByPath.keys()].sort((left, right) => left.localeCompare(right));
+
+  for (const filePath of sortedFilePaths) {
+    const nodeIds = graph.fileIndex.get(filePath) ?? [];
+    const symbols = nodeIds
+      .map((nodeId) => graph.nodes.get(nodeId))
+      .filter((node): node is GraphNode => node !== undefined);
+
+    const fileNodeInfo = fileNodeByPath.get(filePath);
+    if (!fileNodeInfo) {
+      continue;
+    }
 
     nodes.push({
-      id: fileNodeId,
+      id: fileNodeInfo.id,
       name: filePath,
       type: 'file',
       filePath,
-      uriString: firstSymbol.uriString,
+      uriString: fileNodeInfo.uriString,
       line: 1,
       rangeStartLine: 1,
       rangeStartCharacter: 0,
@@ -143,7 +161,7 @@ function serializeWorkspaceGraph(graph: WorkspaceGraph): CodeGraphPayload {
         rangeStartCharacter: symbol.rangeStartCharacter,
         rangeEndLine: symbol.rangeEndLine,
         rangeEndCharacter: symbol.rangeEndCharacter,
-        parentId: fileNodeId,
+        parentId: fileNodeInfo.id,
         degree: 0,
       });
 
@@ -151,7 +169,7 @@ function serializeWorkspaceGraph(graph: WorkspaceGraph): CodeGraphPayload {
         edges,
         edgeKeys,
         degreeByNodeId,
-        fileNodeId,
+        fileNodeInfo.id,
         symbol.id,
         resolveFileRelationship(symbol.nodeType),
       );
@@ -228,6 +246,16 @@ function serializeWorkspaceGraph(graph: WorkspaceGraph): CodeGraphPayload {
         }
       }
     }
+  }
+
+  for (const relationship of graph.fileRelationships) {
+    const sourceNode = fileNodeByPath.get(relationship.sourceFilePath);
+    const targetNode = fileNodeByPath.get(relationship.targetFilePath);
+    if (!sourceNode || !targetNode) {
+      continue;
+    }
+
+    addEdge(edges, edgeKeys, degreeByNodeId, sourceNode.id, targetNode.id, relationship.relationship);
   }
 
   for (const node of nodes) {
@@ -344,6 +372,26 @@ function resolveFileRelationship(nodeType: GraphNode['nodeType']): CodeGraphRela
   }
 
   return 'file-function';
+}
+
+function ensureFileNodeInfo(
+  fileNodeByPath: Map<string, FileNodeInfo>,
+  filePath: string,
+  uriString: string,
+): void {
+  if (fileNodeByPath.has(filePath)) {
+    const existing = fileNodeByPath.get(filePath);
+    if (existing && existing.uriString.length === 0 && uriString.length > 0) {
+      fileNodeByPath.set(filePath, { id: existing.id, uriString });
+    }
+
+    return;
+  }
+
+  fileNodeByPath.set(filePath, {
+    id: `file::${filePath}`,
+    uriString,
+  });
 }
 
 async function openTargetInEditor(target: NodeNavigationTarget): Promise<void> {

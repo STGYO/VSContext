@@ -37,9 +37,10 @@ exports.WorkspaceGraphBuilder = void 0;
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const symbolIndexer_1 = require("./symbolIndexer");
+const fileRoleClassifier_1 = require("../utils/fileRoleClassifier");
 const workspaceScanner_1 = require("../utils/workspaceScanner");
 const knowledgeModel_1 = require("./knowledgeModel");
-const GRAPH_CACHE_VERSION = 3;
+const GRAPH_CACHE_VERSION = 4;
 const PERSIST_DEBOUNCE_MS = 800;
 class WorkspaceGraphBuilder {
     indexer;
@@ -48,6 +49,7 @@ class WorkspaceGraphBuilder {
     cachedGraph = {
         nodes: new Map(),
         fileIndex: new Map(),
+        fileRelationships: [],
         builtAt: undefined,
         fileRoleSummary: undefined,
     };
@@ -57,6 +59,7 @@ class WorkspaceGraphBuilder {
     symbolCache = new Map();
     fileModifiedTimes = new Map();
     fileRelationshipIndex = new Map();
+    supplementaryFileRelationshipIndex = new Map();
     persistTimer;
     persistQueue = Promise.resolve();
     constructor(indexer, logger, cacheFileUri) {
@@ -136,6 +139,7 @@ class WorkspaceGraphBuilder {
         this.cachedGraph = {
             nodes: nodeMap,
             fileIndex: this.createFileIndex(nodeMap),
+            fileRelationships: this.deserializeWorkspaceFileRelationships(snapshot.fileRelationships),
             builtAt: isBuiltAtValid ? builtAt : undefined,
             fileRoleSummary: snapshot.fileRoleSummary,
         };
@@ -190,16 +194,23 @@ class WorkspaceGraphBuilder {
         }
         this.clearRelationshipsForFile(filePath);
         this.removeFileSymbols(filePath);
+        this.supplementaryFileRelationshipIndex.delete(filePath);
         const symbols = await this.indexer.indexDocumentSymbols(uri);
         for (const symbol of symbols) {
             this.symbolCache.set(symbol.id, symbol);
             this.cachedGraph.nodes.set(symbol.id, this.toGraphNode(symbol));
         }
         await this.populateNodeRelationshipsForSymbols(symbols);
+        const role = (0, fileRoleClassifier_1.classifyWorkspaceFile)(uri);
+        const relationships = await this.extractSupplementaryFileRelationships(uri, role, this.collectKnownFilePaths(), this.collectKnownFileUriLookup());
+        if (relationships.length > 0) {
+            this.supplementaryFileRelationshipIndex.set(filePath, relationships);
+        }
         this.rebuildFileIndex();
         this.cachedGraph = {
             nodes: this.cachedGraph.nodes,
             fileIndex: this.cachedGraph.fileIndex,
+            fileRelationships: this.flattenSupplementaryFileRelationships(),
             builtAt: new Date(),
             fileRoleSummary: this.cachedGraph.fileRoleSummary,
         };
@@ -218,6 +229,7 @@ class WorkspaceGraphBuilder {
         }
         const filePath = (0, workspaceScanner_1.toWorkspaceRelativePath)(uri);
         this.clearRelationshipsForFile(filePath);
+        this.supplementaryFileRelationshipIndex.delete(filePath);
         const existingIds = this.cachedGraph.fileIndex.get(filePath) ?? [];
         for (const nodeId of existingIds) {
             const node = this.cachedGraph.nodes.get(nodeId);
@@ -232,6 +244,7 @@ class WorkspaceGraphBuilder {
         this.cachedGraph = {
             nodes: this.cachedGraph.nodes,
             fileIndex: this.cachedGraph.fileIndex,
+            fileRelationships: this.flattenSupplementaryFileRelationships(),
             builtAt: new Date(),
             fileRoleSummary: this.cachedGraph.fileRoleSummary,
         };
@@ -254,16 +267,19 @@ class WorkspaceGraphBuilder {
         this.logger.info('Building workspace graph.');
         try {
             this.fileRelationshipIndex = new Map();
+            this.supplementaryFileRelationshipIndex = new Map();
             const indexResult = await this.indexer.indexWorkspaceSymbols();
             const indexedSymbols = indexResult.indexed;
             this.symbolCache = new Map(indexedSymbols);
             const nodeMap = this.createNodeMap(indexedSymbols);
             await this.populateNodeRelationshipsForSymbols([...indexedSymbols.values()], nodeMap);
+            await this.rebuildSupplementaryFileRelationships(indexResult.filesByRole);
             const fileIndex = this.createFileIndex(nodeMap);
             const edgeCount = [...nodeMap.values()].reduce((count, node) => count + this.relationshipCountForNode(node), 0);
             this.cachedGraph = {
                 nodes: nodeMap,
                 fileIndex,
+                fileRelationships: this.flattenSupplementaryFileRelationships(),
                 builtAt: new Date(),
                 fileRoleSummary: indexResult.fileRoleSummary,
             };
@@ -280,6 +296,7 @@ class WorkspaceGraphBuilder {
             this.cachedGraph = {
                 nodes: new Map(),
                 fileIndex: new Map(),
+                fileRelationships: [],
                 builtAt: new Date(),
                 fileRoleSummary: undefined,
             };
@@ -479,6 +496,7 @@ class WorkspaceGraphBuilder {
         this.cachedGraph = {
             nodes: this.cachedGraph.nodes,
             fileIndex: this.createFileIndex(this.cachedGraph.nodes),
+            fileRelationships: this.cachedGraph.fileRelationships,
             builtAt: this.cachedGraph.builtAt,
             fileRoleSummary: this.cachedGraph.fileRoleSummary,
         };
@@ -650,6 +668,289 @@ class WorkspaceGraphBuilder {
         }
         index.set(filePath, records);
     }
+    async rebuildSupplementaryFileRelationships(filesByRole) {
+        const knownFilePaths = this.collectKnownFilePaths(filesByRole);
+        const knownFileUris = this.collectKnownFileUriLookup(filesByRole);
+        const next = new Map();
+        for (const [role, uris] of Object.entries(filesByRole)) {
+            for (const uri of uris) {
+                const filePath = (0, workspaceScanner_1.toWorkspaceRelativePath)(uri);
+                const relationships = await this.extractSupplementaryFileRelationships(uri, role, knownFilePaths, knownFileUris);
+                if (relationships.length > 0) {
+                    next.set(filePath, relationships);
+                }
+            }
+        }
+        this.supplementaryFileRelationshipIndex = next;
+        this.cachedGraph = {
+            nodes: this.cachedGraph.nodes,
+            fileIndex: this.cachedGraph.fileIndex,
+            fileRelationships: this.flattenSupplementaryFileRelationships(),
+            builtAt: this.cachedGraph.builtAt,
+            fileRoleSummary: this.cachedGraph.fileRoleSummary,
+        };
+    }
+    async extractSupplementaryFileRelationships(uri, role, knownFilePaths, knownFileUris) {
+        const text = await this.readWorkspaceFileText(uri);
+        if (!text) {
+            return [];
+        }
+        const sourceFilePath = (0, workspaceScanner_1.toWorkspaceRelativePath)(uri);
+        const knownFileLookup = this.createKnownFilePathLookup(knownFilePaths);
+        const sourceUriString = uri.toString();
+        const relationships = [];
+        const seen = new Set();
+        const addRelationship = (targetFilePath, relationship) => {
+            if (!targetFilePath || targetFilePath === sourceFilePath) {
+                return;
+            }
+            const key = `${sourceFilePath}->${targetFilePath}:${relationship}`;
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            relationships.push({
+                sourceFilePath,
+                targetFilePath,
+                sourceUriString,
+                targetUriString: knownFileUris.get(targetFilePath) ?? '',
+                relationship,
+            });
+        };
+        for (const specifier of this.extractImportSpecifiers(text)) {
+            const targetFilePath = this.resolveWorkspaceTargetPath(sourceFilePath, specifier, knownFileLookup);
+            if (targetFilePath) {
+                addRelationship(targetFilePath, 'imports');
+            }
+        }
+        if (role === 'test') {
+            for (const targetFilePath of this.inferTestCoverageTargets(sourceFilePath, knownFileLookup)) {
+                addRelationship(targetFilePath, 'covers');
+            }
+        }
+        if (role === 'documentation') {
+            for (const specifier of this.extractMarkdownLinkTargets(text)) {
+                const targetFilePath = this.resolveWorkspaceTargetPath(sourceFilePath, specifier, knownFileLookup);
+                if (targetFilePath) {
+                    addRelationship(targetFilePath, 'documents');
+                }
+            }
+        }
+        if (role === 'template') {
+            for (const specifier of this.extractTemplateLinkTargets(text)) {
+                const targetFilePath = this.resolveWorkspaceTargetPath(sourceFilePath, specifier, knownFileLookup);
+                if (targetFilePath) {
+                    addRelationship(targetFilePath, 'related-to');
+                }
+            }
+        }
+        return relationships;
+    }
+    extractImportSpecifiers(text) {
+        const specifiers = new Set();
+        const patterns = [
+            /\bimport\s+(?:type\s+)?(?:[\w*{},\s]+\s+from\s+)?["']([^"']+)["']/g,
+            /\bfrom\s+["']([^"']+)["']\s+import\b/g,
+            /\brequire\(\s*["']([^"']+)["']\s*\)/g,
+            /#include\s+["<]([^">]+)[">]/g,
+            /@(?:use|import)\s+["']([^"']+)["']/g,
+        ];
+        for (const pattern of patterns) {
+            for (const match of text.matchAll(pattern)) {
+                const specifier = match[1]?.trim();
+                if (specifier && this.isLikelyLocalSpecifier(specifier)) {
+                    specifiers.add(specifier);
+                }
+            }
+        }
+        return [...specifiers];
+    }
+    extractMarkdownLinkTargets(text) {
+        const targets = new Set();
+        for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+            const target = this.normalizeRelationshipTarget(match[1]);
+            if (target && this.isLikelyLocalSpecifier(target)) {
+                targets.add(target);
+            }
+        }
+        return [...targets];
+    }
+    extractTemplateLinkTargets(text) {
+        const targets = new Set();
+        const patterns = [
+            /\b(?:include|extends|partial)\s+["']([^"']+)["']/g,
+            /\bsrc\s*=\s*["']([^"']+)["']/g,
+            /\bhref\s*=\s*["']([^"']+)["']/g,
+        ];
+        for (const pattern of patterns) {
+            for (const match of text.matchAll(pattern)) {
+                const target = this.normalizeRelationshipTarget(match[1]);
+                if (target && this.isLikelyLocalSpecifier(target)) {
+                    targets.add(target);
+                }
+            }
+        }
+        return [...targets];
+    }
+    inferTestCoverageTargets(sourceFilePath, knownFileLookup) {
+        const normalizedSourceBase = this.stripTestSuffix(path.posix.basename(sourceFilePath));
+        if (!normalizedSourceBase) {
+            return [];
+        }
+        const sourceDir = path.posix.dirname(sourceFilePath);
+        const candidates = new Set();
+        const extensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.java', '.rs', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.cs', '.php', '.phtml', '.rb', '.kt', '.kts', '.swift'];
+        for (const extension of extensions) {
+            candidates.add(path.posix.normalize(path.posix.join(sourceDir, `${normalizedSourceBase}${extension}`)));
+            candidates.add(path.posix.normalize(path.posix.join(sourceDir, normalizedSourceBase, `index${extension}`)));
+        }
+        const matches = new Set();
+        for (const candidate of candidates) {
+            const resolved = this.findKnownFilePath(candidate, knownFileLookup);
+            if (resolved && resolved !== sourceFilePath) {
+                matches.add(resolved);
+            }
+        }
+        return [...matches];
+    }
+    resolveWorkspaceTargetPath(sourceFilePath, specifier, knownFileLookup) {
+        const normalizedSpecifier = this.normalizeRelationshipTarget(specifier);
+        if (!normalizedSpecifier || /^(?:[a-z]+:|#|mailto:|data:|https?:)/i.test(normalizedSpecifier)) {
+            return undefined;
+        }
+        const sourceDir = path.posix.dirname(sourceFilePath);
+        const candidates = new Set();
+        if (normalizedSpecifier.startsWith('.') || normalizedSpecifier.startsWith('/')) {
+            candidates.add(path.posix.normalize(path.posix.join(sourceDir, normalizedSpecifier)));
+        }
+        else {
+            candidates.add(path.posix.normalize(path.posix.join(sourceDir, normalizedSpecifier)));
+            candidates.add(path.posix.normalize(normalizedSpecifier));
+        }
+        for (const candidate of [...candidates]) {
+            const resolved = this.findKnownFilePath(candidate, knownFileLookup);
+            if (resolved) {
+                return resolved;
+            }
+            for (const expandedCandidate of this.expandRelationshipPathCandidates(candidate)) {
+                const expandedResolved = this.findKnownFilePath(expandedCandidate, knownFileLookup);
+                if (expandedResolved) {
+                    return expandedResolved;
+                }
+            }
+        }
+        return undefined;
+    }
+    expandRelationshipPathCandidates(basePath) {
+        const extensionCandidates = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.java', '.rs', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.cs', '.php', '.phtml', '.rb', '.kt', '.kts', '.swift', '.md', '.mdx', '.markdown', '.txt', '.rst', '.adoc', '.html', '.htm'];
+        const candidates = new Set();
+        const normalizedBase = path.posix.normalize(basePath);
+        if (path.posix.extname(normalizedBase)) {
+            candidates.add(normalizedBase);
+        }
+        else {
+            for (const extension of extensionCandidates) {
+                candidates.add(`${normalizedBase}${extension}`);
+                candidates.add(path.posix.join(normalizedBase, `index${extension}`));
+            }
+        }
+        return [...candidates];
+    }
+    normalizeRelationshipTarget(value) {
+        return value.trim().replace(/[?#].*$/, '').replace(/\\/g, '/');
+    }
+    stripTestSuffix(fileName) {
+        const withoutExtension = fileName.replace(/\.[^.]+$/, '');
+        const withoutSuffix = withoutExtension.replace(/(?:\.|-|_)?(?:test|spec)$/i, '');
+        return withoutSuffix.length > 0 ? withoutSuffix : withoutExtension;
+    }
+    isLikelyLocalSpecifier(specifier) {
+        return specifier.startsWith('.') || specifier.startsWith('/') || specifier.includes('/');
+    }
+    collectKnownFilePaths(filesByRole) {
+        const filePaths = new Set();
+        for (const filePath of this.cachedGraph.fileIndex.keys()) {
+            filePaths.add(filePath);
+        }
+        for (const relationship of this.flattenSupplementaryFileRelationships()) {
+            filePaths.add(relationship.sourceFilePath);
+            filePaths.add(relationship.targetFilePath);
+        }
+        if (filesByRole) {
+            for (const uris of Object.values(filesByRole)) {
+                for (const uri of uris) {
+                    filePaths.add((0, workspaceScanner_1.toWorkspaceRelativePath)(uri));
+                }
+            }
+        }
+        return filePaths;
+    }
+    collectKnownFileUriLookup(filesByRole) {
+        const lookup = new Map();
+        for (const node of this.cachedGraph.nodes.values()) {
+            lookup.set(node.filePath, node.uriString);
+        }
+        for (const relationship of this.flattenSupplementaryFileRelationships()) {
+            if (relationship.sourceUriString) {
+                lookup.set(relationship.sourceFilePath, relationship.sourceUriString);
+            }
+            if (relationship.targetUriString) {
+                lookup.set(relationship.targetFilePath, relationship.targetUriString);
+            }
+        }
+        if (filesByRole) {
+            for (const uris of Object.values(filesByRole)) {
+                for (const uri of uris) {
+                    lookup.set((0, workspaceScanner_1.toWorkspaceRelativePath)(uri), uri.toString());
+                }
+            }
+        }
+        return lookup;
+    }
+    createKnownFilePathLookup(filePaths) {
+        const lookup = new Map();
+        for (const filePath of filePaths) {
+            lookup.set(filePath.toLowerCase(), filePath);
+        }
+        return lookup;
+    }
+    findKnownFilePath(candidate, knownFileLookup) {
+        const exactMatch = knownFileLookup.get(candidate.toLowerCase());
+        if (exactMatch) {
+            return exactMatch;
+        }
+        const normalizedCandidate = candidate.replace(/\\/g, '/');
+        for (const [key, filePath] of knownFileLookup) {
+            if (key.endsWith(`/${normalizedCandidate.toLowerCase()}`) || key === normalizedCandidate.toLowerCase()) {
+                return filePath;
+            }
+        }
+        return undefined;
+    }
+    flattenSupplementaryFileRelationships() {
+        const relationships = [];
+        for (const entries of this.supplementaryFileRelationshipIndex.values()) {
+            relationships.push(...entries);
+        }
+        return relationships.sort((left, right) => {
+            if (left.sourceFilePath !== right.sourceFilePath) {
+                return left.sourceFilePath.localeCompare(right.sourceFilePath);
+            }
+            if (left.relationship !== right.relationship) {
+                return left.relationship.localeCompare(right.relationship);
+            }
+            return left.targetFilePath.localeCompare(right.targetFilePath);
+        });
+    }
+    async readWorkspaceFileText(uri) {
+        try {
+            const content = await vscode.workspace.fs.readFile(uri);
+            return Buffer.from(content).toString('utf8');
+        }
+        catch {
+            return undefined;
+        }
+    }
     schedulePersistence() {
         if (!this.cacheFileUri || !this.initialIndexCompleted) {
             return;
@@ -688,6 +989,7 @@ class WorkspaceGraphBuilder {
             savedAtIso: new Date().toISOString(),
             builtAtIso: this.cachedGraph.builtAt?.toISOString(),
             fileRoleSummary: this.cachedGraph.fileRoleSummary,
+            fileRelationships: this.flattenSupplementaryFileRelationships(),
             nodes: [...this.cachedGraph.nodes.values()].map((node) => this.serializeNode(node)),
             symbolCache: (0, symbolIndexer_1.serializeIndexedSymbolMap)(this.symbolCache),
             fileModifiedTimes: Object.fromEntries(this.fileModifiedTimes.entries()),
@@ -719,6 +1021,9 @@ class WorkspaceGraphBuilder {
         }
         const safeBuiltAtIso = typeof candidate.builtAtIso === 'string' ? candidate.builtAtIso : undefined;
         const fileRoleSummary = this.parseFileRoleSummary(candidate.fileRoleSummary);
+        const fileRelationships = Array.isArray(candidate.fileRelationships)
+            ? this.deserializeWorkspaceFileRelationships(candidate.fileRelationships)
+            : [];
         return {
             version: candidate.version,
             knowledgeModelVersion: candidate.knowledgeModelVersion,
@@ -726,10 +1031,38 @@ class WorkspaceGraphBuilder {
             savedAtIso: safeSavedAtIso,
             builtAtIso: safeBuiltAtIso,
             fileRoleSummary,
+            fileRelationships,
             nodes: candidate.nodes,
             symbolCache: candidate.symbolCache,
             fileModifiedTimes: candidate.fileModifiedTimes,
         };
+    }
+    deserializeWorkspaceFileRelationships(value) {
+        if (!Array.isArray(value)) {
+            return [];
+        }
+        const relationships = [];
+        for (const entry of value) {
+            if (!entry || typeof entry !== 'object') {
+                continue;
+            }
+            const candidate = entry;
+            if (typeof candidate.sourceFilePath !== 'string'
+                || typeof candidate.targetFilePath !== 'string'
+                || typeof candidate.sourceUriString !== 'string'
+                || typeof candidate.targetUriString !== 'string'
+                || typeof candidate.relationship !== 'string') {
+                continue;
+            }
+            relationships.push({
+                sourceFilePath: candidate.sourceFilePath,
+                targetFilePath: candidate.targetFilePath,
+                sourceUriString: candidate.sourceUriString,
+                targetUriString: candidate.targetUriString,
+                relationship: candidate.relationship,
+            });
+        }
+        return relationships;
     }
     parseFileRoleSummary(value) {
         if (!value || typeof value !== 'object') {

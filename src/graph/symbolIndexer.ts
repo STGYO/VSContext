@@ -4,6 +4,7 @@ import { Worker } from 'worker_threads';
 import * as vscode from 'vscode';
 
 import { Logger } from '../utils/logger';
+import type { WorkspaceFileRole } from '../utils/fileRoleClassifier';
 import {
   findWorkspaceSourceFiles,
   findWorkspaceRepositoryFiles,
@@ -225,6 +226,7 @@ export function deserializeIndexedSymbolMap(snapshots: SerializedIndexedSymbol[]
 export interface WorkspaceIndexResult {
   readonly indexed: Map<string, IndexedSymbol>;
   readonly scannedFiles: vscode.Uri[];
+  readonly filesByRole: Record<WorkspaceFileRole, vscode.Uri[]>;
   readonly scannedFileCount: number;
   readonly indexedSymbolCount: number;
   readonly skippedByExclusions: number;
@@ -281,6 +283,7 @@ export class SymbolIndexer {
       return {
         indexed,
         scannedFiles: scanResult.files,
+        filesByRole: repositoryScan.filesByRole,
         scannedFileCount: scanResult.files.length,
         indexedSymbolCount: indexed.size,
         skippedByExclusions: scanResult.skippedByExclusions,
@@ -292,6 +295,13 @@ export class SymbolIndexer {
       return {
         indexed,
         scannedFiles: [],
+        filesByRole: {
+          source: [],
+          test: [],
+          documentation: [],
+          template: [],
+          other: [],
+        },
         scannedFileCount: 0,
         indexedSymbolCount: 0,
         skippedByExclusions: 0,
