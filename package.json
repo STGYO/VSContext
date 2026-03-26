@@ -23,7 +23,12 @@
   },
   "main": "./out/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onView:vscontext.explorer",
+    "onCommand:vscontext.openNode",
+    "onCommand:vscontext.traceExecution",
+    "onCommand:vscontext.findImpact",
+    "onCommand:vscontext.viewCodeGraph",
+    "onChatParticipant:vscontext.chat-assistant"
   ],
   "categories": [
     "Programming Languages",

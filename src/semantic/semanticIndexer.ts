@@ -62,6 +62,7 @@ export type SemanticRecordKind = 'symbol' | 'chunk' | 'workspace-symbol';
 export interface SemanticSearchOptions {
   readonly focusNodeId?: string;
   readonly maxResults?: number;
+  readonly cancellationToken?: vscode.CancellationToken;
 }
 
 export interface SemanticSearchHit {
@@ -104,8 +105,16 @@ interface SemanticIndexSnapshot {
   readonly records: SemanticRecord[];
 }
 
+interface CachedFileSemanticState {
+  readonly hash: string;
+  readonly records: SemanticRecord[];
+  readonly role: WorkspaceFileRole;
+  readonly order: number;
+}
+
 export class WorkspaceSemanticIndexer {
   private cachedSnapshot: SemanticIndexSnapshot | undefined;
+  private cachedFileStates = new Map<string, CachedFileSemanticState>();
 
   public constructor(private readonly logger: Logger) {}
 
@@ -116,7 +125,7 @@ export class WorkspaceSemanticIndexer {
   ): Promise<SemanticSearchResult> {
     const trimmedQuery = query.trim();
     const maxResults = Math.max(1, options.maxResults ?? DEFAULT_MAX_RESULTS);
-    const snapshot = await this.ensureIndex(graph);
+    const snapshot = await this.ensureIndex(graph, options.cancellationToken);
 
     if (trimmedQuery.length === 0) {
       return {
@@ -175,7 +184,7 @@ export class WorkspaceSemanticIndexer {
     return lines.join('\n');
   }
 
-  private async ensureIndex(graph: WorkspaceGraph): Promise<SemanticIndexSnapshot> {
+  private async ensureIndex(graph: WorkspaceGraph, cancellationToken?: vscode.CancellationToken): Promise<SemanticIndexSnapshot> {
     const signature = createGraphSignature(graph);
     if (this.cachedSnapshot && this.cachedSnapshot.signature === signature) {
       return this.cachedSnapshot;
@@ -183,7 +192,7 @@ export class WorkspaceSemanticIndexer {
 
     const settings = getWorkspaceScanSettings();
     const repositoryScan = await findWorkspaceRepositoryFiles(settings.maxIndexedFiles);
-    const records: SemanticRecord[] = [];
+    const recordsByFile = new Map<string, SemanticRecord[]>();
     const seenFiles = new Map<string, { uri: vscode.Uri; role: WorkspaceFileRole }>();
 
     for (const [role, uris] of Object.entries(repositoryScan.filesByRole) as Array<[WorkspaceFileRole, vscode.Uri[]]>) {
@@ -196,19 +205,37 @@ export class WorkspaceSemanticIndexer {
     }
 
     const fileEntries = [...seenFiles.entries()].sort((left, right) => left[0].localeCompare(right[0]));
-    for (let index = 0; index < fileEntries.length; index += 1) {
-      const [filePath, entry] = fileEntries[index];
+    const concurrency = Math.max(2, Math.min(settings.workerCount, 8));
+
+    await mapWithConcurrency(fileEntries, concurrency, async ([filePath, entry], index) => {
+      if (cancellationToken?.isCancellationRequested) {
+        return;
+      }
+
       const text = await this.readFileText(entry.uri);
-      if (!text) {
-        continue;
+      if (!text || cancellationToken?.isCancellationRequested) {
+        return;
+      }
+
+      const hash = hashText(text);
+      const cached = this.cachedFileStates.get(filePath);
+      if (cached && cached.hash === hash && cached.role === entry.role) {
+        recordsByFile.set(filePath, cached.records);
+        touchCacheEntry(this.cachedFileStates, filePath, cached);
+        return;
       }
 
       const chunks = splitIntoChunks(text, FILE_CHUNK_LINE_WINDOW, FILE_CHUNK_LINE_OVERLAP, MAX_CHUNKS_PER_FILE);
+      const fileRecords: SemanticRecord[] = [];
       for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+        if (cancellationToken?.isCancellationRequested) {
+          return;
+        }
+
         const chunk = chunks[chunkIndex];
         const title = `${toFileName(entry.uri)} chunk ${chunkIndex + 1}`;
         const summary = buildChunkSummary(filePath, entry.role, chunkIndex + 1, chunks.length, chunk);
-        records.push(buildRecord({
+        fileRecords.push(buildRecord({
           id: `chunk:${filePath}:${chunkIndex}`,
           kind: 'chunk',
           title,
@@ -220,6 +247,34 @@ export class WorkspaceSemanticIndexer {
           order: index * 100 + chunkIndex,
           text: `${filePath}\n${entry.role}\n${chunk.text}\n${summary}`,
         }));
+      }
+
+      recordsByFile.set(filePath, fileRecords);
+      this.cachedFileStates.set(filePath, {
+        hash,
+        records: fileRecords,
+        role: entry.role,
+        order: index,
+      });
+      pruneLRU(this.cachedFileStates, 2048);
+    });
+
+    const activeFilePaths = new Set(fileEntries.map(([filePath]) => filePath));
+    for (const filePath of [...this.cachedFileStates.keys()]) {
+      if (!activeFilePaths.has(filePath)) {
+        this.cachedFileStates.delete(filePath);
+      }
+    }
+
+    const records: SemanticRecord[] = [];
+    for (const [filePath] of fileEntries) {
+      if (cancellationToken?.isCancellationRequested) {
+        break;
+      }
+
+      const fileRecords = recordsByFile.get(filePath);
+      if (fileRecords) {
+        records.push(...fileRecords);
       }
     }
 
@@ -237,6 +292,10 @@ export class WorkspaceSemanticIndexer {
         text: buildSymbolText(node, graph),
       }));
     }
+
+      if (cancellationToken?.isCancellationRequested && this.cachedSnapshot) {
+        return this.cachedSnapshot;
+      }
 
     this.cachedSnapshot = {
       signature,
@@ -297,6 +356,53 @@ export class WorkspaceSemanticIndexer {
     } catch {
       return undefined;
     }
+  }
+}
+
+async function mapWithConcurrency<T>(
+  values: readonly T[],
+  concurrency: number,
+  work: (value: T, index: number) => Promise<void>,
+): Promise<void> {
+  let pointer = 0;
+
+  const run = async (): Promise<void> => {
+    while (pointer < values.length) {
+      const currentIndex = pointer;
+      pointer += 1;
+      const value = values[currentIndex];
+      if (value === undefined) {
+        continue;
+      }
+
+      await work(value, currentIndex);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => run()));
+}
+
+function hashText(text: string): string {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+function touchCacheEntry<T extends CachedFileSemanticState>(
+  cache: Map<string, T>,
+  key: string,
+  value: T,
+): void {
+  cache.delete(key);
+  cache.set(key, value);
+}
+
+function pruneLRU<T>(cache: Map<string, T>, maxEntries: number): void {
+  while (cache.size > maxEntries) {
+    const oldestKey = cache.keys().next().value as string | undefined;
+    if (!oldestKey) {
+      break;
+    }
+
+    cache.delete(oldestKey);
   }
 }
 

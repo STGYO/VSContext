@@ -16,6 +16,11 @@ const SUPPORTED_SYMBOL_KINDS = new Set<vscode.SymbolKind>([
   vscode.SymbolKind.Method,
   vscode.SymbolKind.Constructor,
   vscode.SymbolKind.Class,
+  vscode.SymbolKind.Interface,
+  vscode.SymbolKind.Enum,
+  vscode.SymbolKind.Namespace,
+  vscode.SymbolKind.Module,
+  vscode.SymbolKind.TypeParameter,
   vscode.SymbolKind.Variable,
   vscode.SymbolKind.Constant,
   vscode.SymbolKind.Field,
@@ -47,7 +52,7 @@ const PRE_SCAN_AST_EXTENSIONS = new Set<string>([
   '.kts',
 ]);
 
-type WorkerSymbolKind = 'function' | 'method' | 'class' | 'variable' | 'constant' | 'field' | 'property';
+type WorkerSymbolKind = 'function' | 'method' | 'class' | 'interface' | 'enum' | 'namespace' | 'module' | 'typeAlias' | 'variable' | 'constant' | 'field' | 'property';
 
 interface WorkerExtractedSymbol {
   readonly name: string;
@@ -605,6 +610,16 @@ export class SymbolIndexer {
     switch (kind) {
       case 'class':
         return vscode.SymbolKind.Class;
+      case 'interface':
+        return vscode.SymbolKind.Interface;
+      case 'enum':
+        return vscode.SymbolKind.Enum;
+      case 'namespace':
+        return vscode.SymbolKind.Namespace;
+      case 'module':
+        return vscode.SymbolKind.Module;
+      case 'typeAlias':
+        return vscode.SymbolKind.TypeParameter;
       case 'method':
         return vscode.SymbolKind.Method;
       case 'variable':
@@ -671,6 +686,17 @@ export class SymbolIndexer {
       || kind === vscode.SymbolKind.Constant
       || kind === vscode.SymbolKind.Field
       || kind === vscode.SymbolKind.Property
+    );
+  }
+
+  private isClassLikeSymbol(kind: vscode.SymbolKind): boolean {
+    return (
+      kind === vscode.SymbolKind.Class
+      || kind === vscode.SymbolKind.Interface
+      || kind === vscode.SymbolKind.Enum
+      || kind === vscode.SymbolKind.Module
+      || kind === vscode.SymbolKind.Namespace
+      || kind === vscode.SymbolKind.TypeParameter
     );
   }
 

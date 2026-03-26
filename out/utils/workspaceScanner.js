@@ -35,11 +35,14 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SOURCE_EXCLUDE_GLOB = exports.SOURCE_INCLUDE_GLOB = void 0;
 exports.getPrimaryWorkspaceFolder = getPrimaryWorkspaceFolder;
+exports.getWorkspaceFolders = getWorkspaceFolders;
+exports.getWorkspaceCacheKey = getWorkspaceCacheKey;
 exports.toWorkspaceRelativePath = toWorkspaceRelativePath;
 exports.toFileName = toFileName;
 exports.getWorkspaceScanSettings = getWorkspaceScanSettings;
 exports.findWorkspaceSourceFiles = findWorkspaceSourceFiles;
 exports.findWorkspaceRepositoryFiles = findWorkspaceRepositoryFiles;
+const crypto = __importStar(require("crypto"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const fileRoleClassifier_1 = require("./fileRoleClassifier");
@@ -55,6 +58,30 @@ function getPrimaryWorkspaceFolder() {
     }
     return folders[0];
 }
+function getWorkspaceFolders() {
+    return vscode.workspace.workspaceFolders ?? [];
+}
+function getWorkspaceCacheKey() {
+    const folders = getWorkspaceFolders();
+    if (folders.length === 0) {
+        return 'no-workspace';
+    }
+    const hash = crypto.createHash('sha256');
+    for (const folder of [...folders].sort((left, right) => left.uri.toString().localeCompare(right.uri.toString()))) {
+        hash.update(folder.uri.toString());
+        hash.update('\0');
+    }
+    return hash.digest('hex').slice(0, 16);
+}
+function getWorkspaceFolderKey(folder) {
+    const folders = getWorkspaceFolders();
+    if (folders.length <= 1) {
+        return '';
+    }
+    const hash = crypto.createHash('sha1').update(folder.uri.toString()).digest('hex').slice(0, 8);
+    const folderName = folder.name.trim().length > 0 ? folder.name.trim() : 'workspace';
+    return `${folderName}-${hash}/`;
+}
 function toWorkspaceRelativePath(uri) {
     const folder = vscode.workspace.getWorkspaceFolder(uri) ?? getPrimaryWorkspaceFolder();
     const fileSystemPath = typeof uri?.fsPath === 'string' ? uri.fsPath : '';
@@ -62,7 +89,8 @@ function toWorkspaceRelativePath(uri) {
         return fileSystemPath;
     }
     const relativePath = path.relative(folder.uri.fsPath, fileSystemPath);
-    return (relativePath || fileSystemPath).replace(/\\/g, '/');
+    const workspacePrefix = getWorkspaceFolderKey(folder);
+    return `${workspacePrefix}${(relativePath || fileSystemPath).replace(/\\/g, '/')}`;
 }
 function toFileName(uri) {
     return path.basename(uri.fsPath);

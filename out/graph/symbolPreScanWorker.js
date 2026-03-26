@@ -449,6 +449,23 @@ function extractTypeScriptLikeSymbols(root, collector) {
                 collector.addFromNode(findNameNode(node), 'class');
                 break;
             }
+            case 'interface_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'interface');
+                break;
+            }
+            case 'enum_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'enum');
+                break;
+            }
+            case 'type_alias_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'typeAlias');
+                break;
+            }
+            case 'module_declaration':
+            case 'namespace_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), node.type === 'module_declaration' ? 'module' : 'namespace');
+                break;
+            }
             case 'method_definition':
             case 'abstract_method_signature': {
                 collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
@@ -790,11 +807,19 @@ function extractCSharpSymbols(root, collector) {
                 collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
                 break;
             }
+            case 'namespace_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'namespace');
+                break;
+            }
             case 'method_declaration':
             case 'constructor_declaration':
             case 'destructor_declaration':
             case 'operator_declaration': {
                 collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
+                break;
+            }
+            case 'namespace_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'namespace');
                 break;
             }
             case 'local_function_statement': {
@@ -859,6 +884,10 @@ function extractPhpSymbols(root, collector) {
                 collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
                 break;
             }
+            case 'namespace_declaration': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'namespace');
+                break;
+            }
             case 'function_definition': {
                 collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'function');
                 break;
@@ -906,9 +935,12 @@ function extractPhpSymbols(root, collector) {
 function extractRubySymbols(root, collector) {
     walkNamed(root, (node) => {
         switch (node.type) {
-            case 'class':
-            case 'module': {
+            case 'class': {
                 collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
+                break;
+            }
+            case 'module': {
+                collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'module');
                 break;
             }
             case 'method':

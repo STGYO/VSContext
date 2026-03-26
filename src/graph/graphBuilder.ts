@@ -30,6 +30,13 @@ export interface GraphReferenceBuckets {
   writes: string[];
 }
 
+interface FileRelationshipRecord {
+  readonly sourceId: string;
+  readonly targetId: string;
+  readonly edgeType: GraphEdgeType;
+  readonly sourceFilePath: string;
+}
+
 export interface GraphNode {
   readonly id: string;
   readonly symbolName: string;
@@ -102,6 +109,7 @@ export class WorkspaceGraphBuilder {
   private buildPromise: Promise<WorkspaceGraph> | undefined;
   private symbolCache = new Map<string, IndexedSymbol>();
   private fileModifiedTimes = new Map<string, number>();
+  private fileRelationshipIndex = new Map<string, FileRelationshipRecord[]>();
   private persistTimer: NodeJS.Timeout | undefined;
   private persistQueue: Promise<void> = Promise.resolve();
 
@@ -166,11 +174,6 @@ export class WorkspaceGraphBuilder {
       return false;
     }
 
-    const currentWorkspaceUri = getPrimaryWorkspaceFolder()?.uri.toString();
-    if (snapshot.workspaceFolderUri && currentWorkspaceUri && snapshot.workspaceFolderUri !== currentWorkspaceUri) {
-      return false;
-    }
-
     const nodeMap = new Map<string, GraphNode>();
     for (const serializedNode of snapshot.nodes) {
       const node = this.deserializeNode(serializedNode);
@@ -208,6 +211,7 @@ export class WorkspaceGraphBuilder {
     };
     this.symbolCache = restoredSymbolCache;
     this.fileModifiedTimes = this.deserializeFileModifiedTimes(snapshot.fileModifiedTimes);
+    this.rebuildFileRelationshipIndex(nodeMap);
     this.initialIndexCompleted = true;
     this.dirty = false;
 
@@ -257,6 +261,17 @@ export class WorkspaceGraphBuilder {
 
     const filePath = toWorkspaceRelativePath(uri);
     const modifiedAt = await this.getFileModifiedTime(uri);
+    const existingIds = this.cachedGraph.fileIndex.get(filePath) ?? [];
+    for (const nodeId of existingIds) {
+      const node = this.cachedGraph.nodes.get(nodeId);
+      if (!node) {
+        continue;
+      }
+
+      this.removeIncomingRelationshipsForNode(node);
+    }
+
+    this.clearRelationshipsForFile(filePath);
     this.removeFileSymbols(filePath);
 
     const symbols = await this.indexer.indexDocumentSymbols(uri);
@@ -265,14 +280,13 @@ export class WorkspaceGraphBuilder {
       this.cachedGraph.nodes.set(symbol.id, this.toGraphNode(symbol));
     }
 
-    await this.populateNodeRelationshipsForSymbols([...this.symbolCache.values()]);
-    this.trimDanglingRelationships();
+    await this.populateNodeRelationshipsForSymbols(symbols);
     this.rebuildFileIndex();
-    this.populateIncomingRelationships(this.cachedGraph.nodes);
     this.cachedGraph = {
       nodes: this.cachedGraph.nodes,
       fileIndex: this.cachedGraph.fileIndex,
       builtAt: new Date(),
+      fileRoleSummary: this.cachedGraph.fileRoleSummary,
     };
     if (modifiedAt !== undefined) {
       this.fileModifiedTimes.set(filePath, modifiedAt);
@@ -291,15 +305,26 @@ export class WorkspaceGraphBuilder {
     }
 
     const filePath = toWorkspaceRelativePath(uri);
+    this.clearRelationshipsForFile(filePath);
+
+    const existingIds = this.cachedGraph.fileIndex.get(filePath) ?? [];
+    for (const nodeId of existingIds) {
+      const node = this.cachedGraph.nodes.get(nodeId);
+      if (!node) {
+        continue;
+      }
+
+      this.removeIncomingRelationshipsForNode(node);
+    }
+
     this.removeFileSymbols(filePath);
     this.fileModifiedTimes.delete(filePath);
-    this.trimDanglingRelationships();
     this.rebuildFileIndex();
-    this.populateIncomingRelationships(this.cachedGraph.nodes);
     this.cachedGraph = {
       nodes: this.cachedGraph.nodes,
       fileIndex: this.cachedGraph.fileIndex,
       builtAt: new Date(),
+      fileRoleSummary: this.cachedGraph.fileRoleSummary,
     };
     this.dirty = false;
     this.schedulePersistence();
@@ -322,14 +347,13 @@ export class WorkspaceGraphBuilder {
     this.logger.info('Building workspace graph.');
 
     try {
+      this.fileRelationshipIndex = new Map<string, FileRelationshipRecord[]>();
       const indexResult = await this.indexer.indexWorkspaceSymbols();
       const indexedSymbols = indexResult.indexed;
       this.symbolCache = new Map<string, IndexedSymbol>(indexedSymbols);
       const nodeMap = this.createNodeMap(indexedSymbols);
 
       await this.populateNodeRelationshipsForSymbols([...indexedSymbols.values()], nodeMap);
-
-      this.populateIncomingRelationships(nodeMap);
 
       const fileIndex = this.createFileIndex(nodeMap);
       const edgeCount = [...nodeMap.values()].reduce((count, node) => count + this.relationshipCountForNode(node), 0);
@@ -422,27 +446,38 @@ export class WorkspaceGraphBuilder {
     symbols: IndexedSymbol[],
     targetNodes: Map<string, GraphNode> = this.cachedGraph.nodes,
   ): Promise<void> {
-    for (const node of targetNodes.values()) {
-      node.outgoingCalls = [];
-      node.implementations = [];
-      node.references = this.emptyReferenceBuckets();
-    }
-
+    const recordsByFile = new Map<string, FileRelationshipRecord[]>();
     let processed = 0;
-
     for (const symbol of symbols) {
       const node = targetNodes.get(symbol.id);
       if (!node) {
         continue;
       }
 
+      const filePath = symbol.filePath;
+      const fileRecords = recordsByFile.get(filePath) ?? [];
+
       if (this.isCallableSymbol(symbol.symbolKind)) {
         const outgoing = await this.indexer.resolveOutgoingCalls(symbol, this.symbolCache);
-        node.outgoingCalls = outgoing.filter((targetId) => targetNodes.has(targetId) && targetId !== symbol.id);
+        for (const targetId of outgoing.filter((targetNodeId) => targetNodes.has(targetNodeId) && targetNodeId !== symbol.id)) {
+          const targetNode = targetNodes.get(targetId);
+          if (!targetNode) {
+            continue;
+          }
+
+          this.linkRelationship(node, targetNode, 'calls', fileRecords);
+        }
       }
 
       const implementations = await this.indexer.resolveImplementations(symbol, this.symbolCache);
-      node.implementations = implementations.filter((targetId) => targetNodes.has(targetId) && targetId !== symbol.id);
+      for (const targetId of implementations.filter((targetNodeId) => targetNodes.has(targetNodeId) && targetNodeId !== symbol.id)) {
+        const targetNode = targetNodes.get(targetId);
+        if (!targetNode) {
+          continue;
+        }
+
+        this.linkRelationship(node, targetNode, 'implements', fileRecords);
+      }
 
       if (this.isVariableLikeSymbol(symbol.symbolKind)) {
         const variableReferences = await this.indexer.resolveVariableReferences(symbol, this.symbolCache);
@@ -450,27 +485,33 @@ export class WorkspaceGraphBuilder {
 
         for (const sourceNodeId of filteredReferences.reads) {
           const sourceNode = targetNodes.get(sourceNodeId);
-          if (!sourceNode || sourceNode.references.reads.includes(symbol.id)) {
+          if (!sourceNode) {
             continue;
           }
 
-          sourceNode.references.reads.push(symbol.id);
+          this.linkRelationship(sourceNode, node, 'reads', fileRecords);
         }
 
         for (const sourceNodeId of filteredReferences.writes) {
           const sourceNode = targetNodes.get(sourceNodeId);
-          if (!sourceNode || sourceNode.references.writes.includes(symbol.id)) {
+          if (!sourceNode) {
             continue;
           }
 
-          sourceNode.references.writes.push(symbol.id);
+          this.linkRelationship(sourceNode, node, 'writes', fileRecords);
         }
       }
+
+      recordsByFile.set(filePath, fileRecords);
 
       processed += 1;
       if (processed % 25 === 0) {
         await this.yieldToEventLoop();
       }
+    }
+
+    for (const [filePath, records] of recordsByFile) {
+      this.fileRelationshipIndex.set(filePath, records);
     }
   }
 
@@ -579,7 +620,212 @@ export class WorkspaceGraphBuilder {
       nodes: this.cachedGraph.nodes,
       fileIndex: this.createFileIndex(this.cachedGraph.nodes),
       builtAt: this.cachedGraph.builtAt,
+      fileRoleSummary: this.cachedGraph.fileRoleSummary,
     };
+  }
+
+  private rebuildFileRelationshipIndex(nodeMap: Map<string, GraphNode> = this.cachedGraph.nodes): void {
+    const index = new Map<string, FileRelationshipRecord[]>();
+
+    for (const node of nodeMap.values()) {
+      for (const targetId of node.outgoingCalls) {
+        this.appendFileRelationshipRecord(index, node.filePath, {
+          sourceId: node.id,
+          targetId,
+          edgeType: 'calls',
+          sourceFilePath: node.filePath,
+        });
+      }
+
+      for (const targetId of node.implementations) {
+        this.appendFileRelationshipRecord(index, node.filePath, {
+          sourceId: node.id,
+          targetId,
+          edgeType: 'implements',
+          sourceFilePath: node.filePath,
+        });
+      }
+
+      for (const targetId of node.references.reads) {
+        this.appendFileRelationshipRecord(index, node.filePath, {
+          sourceId: node.id,
+          targetId,
+          edgeType: 'reads',
+          sourceFilePath: node.filePath,
+        });
+      }
+
+      for (const targetId of node.references.writes) {
+        this.appendFileRelationshipRecord(index, node.filePath, {
+          sourceId: node.id,
+          targetId,
+          edgeType: 'writes',
+          sourceFilePath: node.filePath,
+        });
+      }
+    }
+
+    this.fileRelationshipIndex = index;
+  }
+
+  private linkRelationship(
+    sourceNode: GraphNode,
+    targetNode: GraphNode,
+    edgeType: GraphEdgeType,
+    records: FileRelationshipRecord[],
+  ): void {
+    if (sourceNode.id === targetNode.id) {
+      return;
+    }
+
+    switch (edgeType) {
+      case 'calls':
+        this.addUniqueValue(sourceNode.outgoingCalls, targetNode.id);
+        this.addUniqueValue(targetNode.incomingCalls, sourceNode.id);
+        break;
+      case 'implements':
+        this.addUniqueValue(sourceNode.implementations, targetNode.id);
+        this.addUniqueValue(targetNode.incomingImplementations, sourceNode.id);
+        break;
+      case 'reads':
+        this.addUniqueValue(sourceNode.references.reads, targetNode.id);
+        this.addUniqueValue(targetNode.incomingReferences.reads, sourceNode.id);
+        break;
+      case 'writes':
+        this.addUniqueValue(sourceNode.references.writes, targetNode.id);
+        this.addUniqueValue(targetNode.incomingReferences.writes, sourceNode.id);
+        break;
+      default:
+        break;
+    }
+
+    records.push({
+      sourceId: sourceNode.id,
+      targetId: targetNode.id,
+      edgeType,
+      sourceFilePath: sourceNode.filePath,
+    });
+  }
+
+  private clearRelationshipsForFile(filePath: string): void {
+    const records = this.fileRelationshipIndex.get(filePath) ?? [];
+    for (const record of records) {
+      this.removeRelationshipRecord(record);
+    }
+
+    this.fileRelationshipIndex.delete(filePath);
+  }
+
+  private removeIncomingRelationshipsForNode(node: GraphNode): void {
+    for (const sourceId of [...node.incomingCalls]) {
+      this.removeRelationshipByDetails(sourceId, node.id, 'calls');
+    }
+
+    for (const sourceId of [...node.incomingImplementations]) {
+      this.removeRelationshipByDetails(sourceId, node.id, 'implements');
+    }
+
+    for (const sourceId of [...node.incomingReferences.reads]) {
+      this.removeRelationshipByDetails(sourceId, node.id, 'reads');
+    }
+
+    for (const sourceId of [...node.incomingReferences.writes]) {
+      this.removeRelationshipByDetails(sourceId, node.id, 'writes');
+    }
+  }
+
+  private removeRelationshipByDetails(sourceId: string, targetId: string, edgeType: GraphEdgeType): void {
+    const sourceNode = this.cachedGraph.nodes.get(sourceId);
+    const targetNode = this.cachedGraph.nodes.get(targetId);
+    if (!sourceNode || !targetNode) {
+      return;
+    }
+
+    this.removeRelationshipRecord({
+      sourceId,
+      targetId,
+      edgeType,
+      sourceFilePath: sourceNode.filePath,
+    });
+  }
+
+  private removeRelationshipRecord(record: FileRelationshipRecord): void {
+    const sourceNode = this.cachedGraph.nodes.get(record.sourceId);
+    const targetNode = this.cachedGraph.nodes.get(record.targetId);
+    if (!sourceNode || !targetNode) {
+      this.removeRelationshipRecordFromIndex(record);
+      return;
+    }
+
+    switch (record.edgeType) {
+      case 'calls':
+        this.removeValueFromArray(sourceNode.outgoingCalls, record.targetId);
+        this.removeValueFromArray(targetNode.incomingCalls, record.sourceId);
+        break;
+      case 'implements':
+        this.removeValueFromArray(sourceNode.implementations, record.targetId);
+        this.removeValueFromArray(targetNode.incomingImplementations, record.sourceId);
+        break;
+      case 'reads':
+        this.removeValueFromArray(sourceNode.references.reads, record.targetId);
+        this.removeValueFromArray(targetNode.incomingReferences.reads, record.sourceId);
+        break;
+      case 'writes':
+        this.removeValueFromArray(sourceNode.references.writes, record.targetId);
+        this.removeValueFromArray(targetNode.incomingReferences.writes, record.sourceId);
+        break;
+      default:
+        break;
+    }
+
+    this.removeRelationshipRecordFromIndex(record);
+  }
+
+  private removeRelationshipRecordFromIndex(record: FileRelationshipRecord): void {
+    const records = this.fileRelationshipIndex.get(record.sourceFilePath);
+    if (!records || records.length === 0) {
+      return;
+    }
+
+    const filtered = records.filter((entry) => !this.sameRelationshipRecord(entry, record));
+    if (filtered.length === 0) {
+      this.fileRelationshipIndex.delete(record.sourceFilePath);
+      return;
+    }
+
+    this.fileRelationshipIndex.set(record.sourceFilePath, filtered);
+  }
+
+  private sameRelationshipRecord(left: FileRelationshipRecord, right: FileRelationshipRecord): boolean {
+    return left.sourceId === right.sourceId
+      && left.targetId === right.targetId
+      && left.edgeType === right.edgeType;
+  }
+
+  private addUniqueValue(target: string[], value: string): void {
+    if (!target.includes(value)) {
+      target.push(value);
+    }
+  }
+
+  private removeValueFromArray(target: string[], value: string): void {
+    const index = target.indexOf(value);
+    if (index >= 0) {
+      target.splice(index, 1);
+    }
+  }
+
+  private appendFileRelationshipRecord(
+    index: Map<string, FileRelationshipRecord[]>,
+    filePath: string,
+    record: FileRelationshipRecord,
+  ): void {
+    const records = index.get(filePath) ?? [];
+    if (!records.some((entry) => this.sameRelationshipRecord(entry, record))) {
+      records.push(record);
+    }
+
+    index.set(filePath, records);
   }
 
   private schedulePersistence(): void {
@@ -872,6 +1118,16 @@ export class WorkspaceGraphBuilder {
 
   private resolveNodeType(kind: vscode.SymbolKind): GraphNodeType {
     if (kind === vscode.SymbolKind.Class) {
+      return 'class';
+    }
+
+    if (
+      kind === vscode.SymbolKind.Interface
+      || kind === vscode.SymbolKind.Enum
+      || kind === vscode.SymbolKind.Namespace
+      || kind === vscode.SymbolKind.Module
+      || kind === vscode.SymbolKind.TypeParameter
+    ) {
       return 'class';
     }
 

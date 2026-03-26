@@ -16,7 +16,7 @@ import Ruby = require('tree-sitter-ruby');
 import Rust = require('tree-sitter-rust');
 import TypeScript = require('tree-sitter-typescript');
 
-type WorkerSymbolKind = 'function' | 'method' | 'class' | 'variable' | 'constant' | 'field' | 'property';
+type WorkerSymbolKind = 'function' | 'method' | 'class' | 'interface' | 'enum' | 'namespace' | 'module' | 'typeAlias' | 'variable' | 'constant' | 'field' | 'property';
 
 interface WorkerExtractedSymbol {
   readonly name: string;
@@ -514,6 +514,23 @@ function extractTypeScriptLikeSymbols(root: Parser.SyntaxNode, collector: Symbol
         collector.addFromNode(findNameNode(node), 'class');
         break;
       }
+      case 'interface_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'interface');
+        break;
+      }
+      case 'enum_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'enum');
+        break;
+      }
+      case 'type_alias_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'typeAlias');
+        break;
+      }
+      case 'module_declaration':
+      case 'namespace_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), node.type === 'module_declaration' ? 'module' : 'namespace');
+        break;
+      }
       case 'method_definition':
       case 'abstract_method_signature': {
         collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
@@ -826,7 +843,6 @@ function extractCStyleSymbols(root: Parser.SyntaxNode, collector: SymbolCollecto
         if (!nameNode) {
           break;
         }
-
         const declaratorText = declarator ? collector.readText(declarator) : '';
         const kind: WorkerSymbolKind = declaratorText.includes('::') ? 'method' : 'function';
         collector.addFromNode(nameNode, kind);
@@ -887,11 +903,19 @@ function extractCSharpSymbols(root: Parser.SyntaxNode, collector: SymbolCollecto
         collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
         break;
       }
+      case 'namespace_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'namespace');
+        break;
+      }
       case 'method_declaration':
       case 'constructor_declaration':
       case 'destructor_declaration':
       case 'operator_declaration': {
         collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
+        break;
+      }
+      case 'namespace_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'namespace');
         break;
       }
       case 'local_function_statement': {
@@ -960,6 +984,10 @@ function extractPhpSymbols(root: Parser.SyntaxNode, collector: SymbolCollector):
         collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'method');
         break;
       }
+      case 'namespace_declaration': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'namespace');
+        break;
+      }
       case 'function_definition': {
         collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'function');
         break;
@@ -1012,9 +1040,12 @@ function extractPhpSymbols(root: Parser.SyntaxNode, collector: SymbolCollector):
 function extractRubySymbols(root: Parser.SyntaxNode, collector: SymbolCollector): void {
   walkNamed(root, (node) => {
     switch (node.type) {
-      case 'class':
-      case 'module': {
+      case 'class': {
         collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'class');
+        break;
+      }
+      case 'module': {
+        collector.addFromNode(node.childForFieldName('name') ?? findNameNode(node), 'module');
         break;
       }
       case 'method':

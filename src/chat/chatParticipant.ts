@@ -14,6 +14,7 @@ interface RegisterChatParticipantOptions {
   readonly semanticIndexer: WorkspaceSemanticIndexer;
   readonly logger: Logger;
   readonly getLastTreeSelectionNodeId: () => string | undefined;
+  readonly ensureGraphInitialized: () => Promise<void>;
 }
 
 const PARTICIPANT_ID = 'vscontext.chat-assistant';
@@ -28,6 +29,8 @@ export function registerVSContextChatParticipant(
       stream.markdown(getHelpMessage());
       return;
     }
+
+    await options.ensureGraphInitialized();
 
     if (options.graphBuilder.isIndexing() && !options.graphBuilder.hasCompletedInitialIndex()) {
       stream.markdown('VSContext is still indexing the workspace. Try again in a moment.');

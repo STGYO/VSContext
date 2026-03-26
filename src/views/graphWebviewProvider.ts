@@ -73,7 +73,7 @@ export async function openGraphWebviewPanel(
     vscode.ViewColumn.Beside,
     {
       enableScripts: true,
-      retainContextWhenHidden: true,
+      retainContextWhenHidden: false,
       localResourceRoots: [
         joinExtensionPath(context.extensionUri, 'webview'),
         joinExtensionPath(context.extensionUri, 'node_modules', 'cytoscape', 'dist'),

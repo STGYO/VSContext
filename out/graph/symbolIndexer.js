@@ -49,6 +49,11 @@ const SUPPORTED_SYMBOL_KINDS = new Set([
     vscode.SymbolKind.Method,
     vscode.SymbolKind.Constructor,
     vscode.SymbolKind.Class,
+    vscode.SymbolKind.Interface,
+    vscode.SymbolKind.Enum,
+    vscode.SymbolKind.Namespace,
+    vscode.SymbolKind.Module,
+    vscode.SymbolKind.TypeParameter,
     vscode.SymbolKind.Variable,
     vscode.SymbolKind.Constant,
     vscode.SymbolKind.Field,
@@ -459,6 +464,16 @@ class SymbolIndexer {
         switch (kind) {
             case 'class':
                 return vscode.SymbolKind.Class;
+            case 'interface':
+                return vscode.SymbolKind.Interface;
+            case 'enum':
+                return vscode.SymbolKind.Enum;
+            case 'namespace':
+                return vscode.SymbolKind.Namespace;
+            case 'module':
+                return vscode.SymbolKind.Module;
+            case 'typeAlias':
+                return vscode.SymbolKind.TypeParameter;
             case 'method':
                 return vscode.SymbolKind.Method;
             case 'variable':
@@ -511,6 +526,14 @@ class SymbolIndexer {
             || kind === vscode.SymbolKind.Constant
             || kind === vscode.SymbolKind.Field
             || kind === vscode.SymbolKind.Property);
+    }
+    isClassLikeSymbol(kind) {
+        return (kind === vscode.SymbolKind.Class
+            || kind === vscode.SymbolKind.Interface
+            || kind === vscode.SymbolKind.Enum
+            || kind === vscode.SymbolKind.Module
+            || kind === vscode.SymbolKind.Namespace
+            || kind === vscode.SymbolKind.TypeParameter);
     }
     hasMeaningfulName(name, kind) {
         const normalized = name.trim();

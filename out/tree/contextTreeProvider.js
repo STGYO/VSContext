@@ -48,11 +48,16 @@ class VSContextTreeItem extends vscode.TreeItem {
 class ContextTreeProvider {
     graphBuilder;
     logger;
+    requestGraphInitialization;
     _onDidChangeTreeData = new vscode.EventEmitter();
     onDidChangeTreeData = this._onDidChangeTreeData.event;
-    constructor(graphBuilder, logger) {
+    constructor(graphBuilder, logger, requestGraphInitialization) {
         this.graphBuilder = graphBuilder;
         this.logger = logger;
+        this.requestGraphInitialization = requestGraphInitialization;
+    }
+    dispose() {
+        this._onDidChangeTreeData.dispose();
     }
     refresh() {
         this.logger.info('Tree refresh requested.');
@@ -67,6 +72,9 @@ class ContextTreeProvider {
                 return element.children ?? [];
             }
             const graph = this.graphBuilder.peekGraph();
+            if (!this.graphBuilder.hasCompletedInitialIndex() && !this.graphBuilder.isIndexing()) {
+                this.requestGraphInitialization();
+            }
             this.logger.info(`Tree root requested with ${graph.nodes.size} nodes.`);
             return this.buildRootTree(graph, this.graphBuilder.isIndexing());
         }
@@ -103,7 +111,7 @@ class ContextTreeProvider {
                 .filter((node) => this.isMethodLike(node.symbolKind))
                 .map((node) => this.createSymbolItem(node, true));
             const classItems = symbols
-                .filter((node) => node.symbolKind === vscode.SymbolKind.Class)
+                .filter((node) => this.isClassLike(node.symbolKind))
                 .map((node) => this.createSymbolItem(node, false));
             const constantItems = symbols
                 .filter((node) => node.symbolKind === vscode.SymbolKind.Constant)
@@ -167,6 +175,14 @@ class ContextTreeProvider {
     isMethodLike(kind) {
         return kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor;
     }
+    isClassLike(kind) {
+        return (kind === vscode.SymbolKind.Class
+            || kind === vscode.SymbolKind.Interface
+            || kind === vscode.SymbolKind.Enum
+            || kind === vscode.SymbolKind.Namespace
+            || kind === vscode.SymbolKind.Module
+            || kind === vscode.SymbolKind.TypeParameter);
+    }
     isVariableLike(kind) {
         return (kind === vscode.SymbolKind.Variable
             || kind === vscode.SymbolKind.Constant
@@ -181,6 +197,9 @@ class ContextTreeProvider {
             return this.themeIcon('symbol-method');
         }
         if (kind === vscode.SymbolKind.Class) {
+            return this.themeIcon('symbol-class');
+        }
+        if (kind === vscode.SymbolKind.Interface || kind === vscode.SymbolKind.Enum || kind === vscode.SymbolKind.Namespace || kind === vscode.SymbolKind.Module || kind === vscode.SymbolKind.TypeParameter) {
             return this.themeIcon('symbol-class');
         }
         if (kind === vscode.SymbolKind.Constant) {
@@ -212,7 +231,7 @@ class ContextTreeProvider {
             .sort((left, right) => left.symbolName.localeCompare(right.symbolName))
             .map((node) => this.createSymbolItem(node, true));
         const classItems = allNodes
-            .filter((node) => node.symbolKind === vscode.SymbolKind.Class)
+            .filter((node) => this.isClassLike(node.symbolKind))
             .sort((left, right) => left.symbolName.localeCompare(right.symbolName))
             .map((node) => this.createSymbolItem(node, false));
         const constantItems = allNodes

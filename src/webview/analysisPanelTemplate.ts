@@ -36,7 +36,7 @@ export function openAnalysisPanel(
     vscode.ViewColumn.Beside,
     {
       enableScripts: true,
-      retainContextWhenHidden: true,
+      retainContextWhenHidden: false,
     },
   );
 

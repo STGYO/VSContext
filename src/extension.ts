@@ -15,6 +15,7 @@ import {
   findWorkspaceSourceFiles,
   getPrimaryWorkspaceFolder,
   getWorkspaceScanSettings,
+  getWorkspaceCacheKey,
   toWorkspaceRelativePath,
 } from './utils/workspaceScanner';
 import { openExecutionPanel } from './webview/executionPanel';
@@ -29,7 +30,9 @@ function createGraphCacheUri(context: vscode.ExtensionContext): vscode.Uri | und
 
   const workspaceHash = crypto
     .createHash('sha256')
-    .update(workspaceFolder.uri.toString())
+    .update(getWorkspaceCacheKey())
+    .update('|')
+    .update(String(context.extension.packageJSON?.version ?? 'unknown'))
     .digest('hex')
     .slice(0, 16);
 
@@ -171,13 +174,76 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const semanticIndexer = new WorkspaceSemanticIndexer(logger);
     const cacheFileUri = createGraphCacheUri(context);
     const graphBuilder = new WorkspaceGraphBuilder(symbolIndexer, logger, cacheFileUri);
-    const treeProvider = new ContextTreeProvider(graphBuilder, logger);
+    let treeProvider: ContextTreeProvider;
+    let initializationPromise: Promise<void> | undefined;
+
+    const ensureGraphInitialized = async (): Promise<void> => {
+      if (graphBuilder.hasCompletedInitialIndex()) {
+        return;
+      }
+
+      if (initializationPromise) {
+        await initializationPromise;
+        return;
+      }
+
+      initializationPromise = (async () => {
+        const hydrated = await graphBuilder.hydrateFromCache();
+        if (hydrated) {
+          treeProvider.refresh();
+          await vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Window,
+              title: 'VSContext: Refreshing cached graph',
+              cancellable: true,
+            },
+            async (progress, token) => {
+              try {
+                const refreshed = await reconcileHydratedGraph(
+                  graphBuilder,
+                  logger,
+                  scanSettings.maxIndexedFiles,
+                  progress,
+                  token,
+                );
+                if (!refreshed.cancelled && (refreshed.upserts > 0 || refreshed.deletes > 0)) {
+                  treeProvider.refresh();
+                }
+              } catch (error) {
+                logger.warn(`Failed to reconcile hydrated graph state. ${String(error)}`);
+              }
+            },
+          );
+          return;
+        }
+
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Window,
+            title: 'VSContext: Indexing workspace',
+          },
+          async () => {
+            await graphBuilder.buildWorkspaceGraph();
+            treeProvider.refresh();
+          },
+        );
+      })().finally(() => {
+        initializationPromise = undefined;
+      });
+
+      await initializationPromise;
+    };
+
+    treeProvider = new ContextTreeProvider(graphBuilder, logger, () => {
+      void ensureGraphInitialized();
+    });
 
     const treeView = vscode.window.createTreeView('vscontext.explorer', {
       treeDataProvider: treeProvider,
       showCollapseAll: true,
     });
 
+    context.subscriptions.push(treeProvider);
     context.subscriptions.push(treeView);
 
     let lastSelectedNodeId: string | undefined;
@@ -197,6 +263,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         semanticIndexer,
         logger,
         getLastTreeSelectionNodeId: () => lastSelectedNodeId,
+        ensureGraphInitialized,
       }),
     );
 
@@ -341,6 +408,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand('vscontext.openNode', async (nodeId?: string) => {
         try {
           logger.info(`Command executed: vscontext.openNode (${String(nodeId ?? '')})`);
+          await ensureGraphInitialized();
           if (!nodeId || typeof nodeId !== 'string') {
             return;
           }
@@ -362,6 +430,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand('vscontext.traceExecution', async (argument?: { nodeId?: string } | string) => {
         try {
           logger.info('Command executed: vscontext.traceExecution');
+          await ensureGraphInitialized();
 
           if (graphBuilder.isIndexing() && !graphBuilder.hasCompletedInitialIndex()) {
             void vscode.window.showInformationMessage('VSContext is still indexing the workspace.');
@@ -406,6 +475,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand('vscontext.findImpact', async (argument?: { nodeId?: string } | string) => {
         try {
           logger.info('Command executed: vscontext.findImpact');
+          await ensureGraphInitialized();
 
           if (graphBuilder.isIndexing() && !graphBuilder.hasCompletedInitialIndex()) {
             void vscode.window.showInformationMessage('VSContext is still indexing the workspace.');
@@ -450,6 +520,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand('vscontext.viewCodeGraph', async () => {
         try {
           logger.info('Command executed: vscontext.viewCodeGraph');
+          await ensureGraphInitialized();
           await openCodeGraphView(context, graphBuilder, logger);
         } catch (error) {
           logger.error('Command failed: vscontext.viewCodeGraph', error);
@@ -457,46 +528,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       }),
     );
-
-    const hydrated = await graphBuilder.hydrateFromCache();
-    if (hydrated) {
-      treeProvider.refresh();
-
-      void vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Window,
-          title: 'VSContext: Refreshing cached graph',
-          cancellable: true,
-        },
-        async (progress, token) => {
-          try {
-            const refreshed = await reconcileHydratedGraph(
-              graphBuilder,
-              logger,
-              scanSettings.maxIndexedFiles,
-              progress,
-              token,
-            );
-            if (!refreshed.cancelled && (refreshed.upserts > 0 || refreshed.deletes > 0)) {
-              treeProvider.refresh();
-            }
-          } catch (error) {
-            logger.warn(`Failed to reconcile hydrated graph state. ${String(error)}`);
-          }
-        },
-      );
-    } else {
-      void vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Window,
-          title: 'VSContext: Indexing workspace',
-        },
-        async () => {
-          await graphBuilder.buildWorkspaceGraph();
-          treeProvider.refresh();
-        },
-      );
-    }
 
     treeProvider.refresh();
     logger.info('VSContext activation completed.');

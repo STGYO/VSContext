@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -18,6 +19,36 @@ export function getPrimaryWorkspaceFolder(): vscode.WorkspaceFolder | undefined 
   return folders[0];
 }
 
+export function getWorkspaceFolders(): readonly vscode.WorkspaceFolder[] {
+  return vscode.workspace.workspaceFolders ?? [];
+}
+
+export function getWorkspaceCacheKey(): string {
+  const folders = getWorkspaceFolders();
+  if (folders.length === 0) {
+    return 'no-workspace';
+  }
+
+  const hash = crypto.createHash('sha256');
+  for (const folder of [...folders].sort((left, right) => left.uri.toString().localeCompare(right.uri.toString()))) {
+    hash.update(folder.uri.toString());
+    hash.update('\0');
+  }
+
+  return hash.digest('hex').slice(0, 16);
+}
+
+function getWorkspaceFolderKey(folder: vscode.WorkspaceFolder): string {
+  const folders = getWorkspaceFolders();
+  if (folders.length <= 1) {
+    return '';
+  }
+
+  const hash = crypto.createHash('sha1').update(folder.uri.toString()).digest('hex').slice(0, 8);
+  const folderName = folder.name.trim().length > 0 ? folder.name.trim() : 'workspace';
+  return `${folderName}-${hash}/`;
+}
+
 export function toWorkspaceRelativePath(uri: vscode.Uri): string {
   const folder = vscode.workspace.getWorkspaceFolder(uri) ?? getPrimaryWorkspaceFolder();
   const fileSystemPath = typeof uri?.fsPath === 'string' ? uri.fsPath : '';
@@ -27,7 +58,8 @@ export function toWorkspaceRelativePath(uri: vscode.Uri): string {
   }
 
   const relativePath = path.relative(folder.uri.fsPath, fileSystemPath);
-  return (relativePath || fileSystemPath).replace(/\\/g, '/');
+  const workspacePrefix = getWorkspaceFolderKey(folder);
+  return `${workspacePrefix}${(relativePath || fileSystemPath).replace(/\\/g, '/')}`;
 }
 
 export function toFileName(uri: vscode.Uri): string {
