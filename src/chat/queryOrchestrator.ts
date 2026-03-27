@@ -9,7 +9,7 @@ import { type ChatContextBudget } from './contextFilters';
 import { resolveFocusNode } from './focusResolver';
 import { buildWorkspaceContextSummary } from './contextSummary';
 
-export type QueryTemplateId = 'summary' | 'trace' | 'impact' | 'root-cause' | 'blast-radius' | 'similar-code' | 'test-coverage' | 'general';
+export type QueryTemplateId = 'summary' | 'trace' | 'impact' | 'root-cause' | 'blast-radius' | 'similar-code' | 'test-coverage' | 'repo-summary' | 'issue-solution' | 'general';
 
 export interface HybridQueryInputs {
   readonly request: vscode.ChatRequest;
@@ -62,25 +62,34 @@ const TEMPLATE_LABELS: Record<QueryTemplateId, string> = {
   'blast-radius': 'Blast Radius',
   'similar-code': 'Similar Code',
   'test-coverage': 'Test Coverage',
+  'repo-summary': 'Repository Summary',
+  'issue-solution': 'Issue Solution',
   general: 'Hybrid Query',
 };
 
 export async function orchestrateHybridQuery(inputs: HybridQueryInputs): Promise<HybridQueryResult> {
   const templateId = resolveTemplateId(inputs.request.command, inputs.request.prompt);
-  const focusNode = resolveFocusNode(inputs.graph, {
+  
+  // For repo-summary, we don't resolve a focus node; for others, we do
+  const shouldResolveFocus = templateId !== 'repo-summary';
+  const focusNode = shouldResolveFocus ? resolveFocusNode(inputs.graph, {
     explicitNodeId: extractExplicitNodeId(inputs.request),
     treeSelectionNodeId: inputs.getLastTreeSelectionNodeId(),
     prompt: inputs.request.prompt,
-  });
+  }) : undefined;
 
   inputs.logger.info(`[VSContext] Query template resolved: ${templateId}${focusNode ? ` (${focusNode.symbolName})` : ''}.`);
 
   const plan = buildQueryPlan(templateId, inputs.request.prompt, focusNode);
-  const summary = await buildWorkspaceContextSummary(inputs.graph, {
-    budget: inputs.budget,
-    denylistPatterns: inputs.denylistPatterns,
-    focusNode: templateId === 'similar-code' ? undefined : focusNode,
-  });
+  
+  // Use workspace-level summary for repo-summary; use focused summary for others
+  const summary = templateId === 'repo-summary'
+    ? buildRepositorySummaryContext(inputs.graph, inputs.logger)
+    : await buildWorkspaceContextSummary(inputs.graph, {
+        budget: inputs.budget,
+        denylistPatterns: inputs.denylistPatterns,
+        focusNode: templateId === 'similar-code' ? undefined : focusNode,
+      });
 
   const [semanticHits, traceResult, impactResult, fileRelationships] = await Promise.all([
     runSemanticQueries(inputs.semanticIndexer, inputs.graph, plan.semanticQueries, focusNode, plan.semanticMaxResults),
@@ -138,6 +147,8 @@ export function getQueryHelpMessage(): string {
     '- /blast-radius: estimate the impact surface and dependent files.',
     '- /similar-code: find semantically similar code and nearby graph context.',
     '- /test-coverage: surface tests and coverage links for the resolved symbol.',
+    '- /repo: generate a high-level repository structure and metrics summary.',
+    '- /issue: analyze an issue and suggest affected code, tests, and solutions.',
     '- /help: show VSContext chat participant usage and focus resolution rules.',
     '',
     'Focus resolution order:',
@@ -145,6 +156,8 @@ export function getQueryHelpMessage(): string {
     '2. active editor symbol under cursor',
     '3. last selected symbol in VSContext tree',
     '4. symbol name inferred from prompt text',
+    '',
+    'Repository-level queries (/repo) and issue workflows (/issue) work without a focus symbol.',
   ].join('\n');
 }
 
@@ -209,6 +222,26 @@ function buildQueryPlan(templateId: QueryTemplateId, prompt: string, focusNode: 
         semanticQueries.add(`${focusName} coverage`);
       }
       break;
+    case 'repo-summary':
+      graphQueries.push('repository structure and hotspots');
+      graphQueries.push('file role classification');
+      graphQueries.push('key entry points');
+      semanticQueries.clear();
+      semanticQueries.add('main entry point');
+      semanticQueries.add('architecture overview');
+      break;
+    case 'issue-solution':
+      graphQueries.push('affected code analysis');
+      graphQueries.push('test coverage and related files');
+      graphQueries.push('similar patterns and solutions');
+      useTrace = true;
+      useImpact = true;
+      if (focusName.length > 0) {
+        semanticQueries.add(`${focusName} fix`);
+        semanticQueries.add(`${focusName} error`);
+        semanticQueries.add(`${focusName} solution`);
+      }
+      break;
     case 'summary':
     case 'general':
     default:
@@ -220,7 +253,7 @@ function buildQueryPlan(templateId: QueryTemplateId, prompt: string, focusNode: 
     templateId,
     graphQueries,
     semanticQueries: [...semanticQueries],
-    semanticMaxResults: templateId === 'similar-code' ? 8 : 6,
+    semanticMaxResults: templateId === 'similar-code' || templateId === 'issue-solution' ? 8 : 6,
     useTrace,
     useImpact,
   };
@@ -236,8 +269,18 @@ function resolveTemplateId(command: string | undefined, prompt: string): QueryTe
     || normalizedCommand === 'blast-radius'
     || normalizedCommand === 'similar-code'
     || normalizedCommand === 'test-coverage'
+    || normalizedCommand === 'repo'
+    || normalizedCommand === 'repo-summary'
+    || normalizedCommand === 'issue'
+    || normalizedCommand === 'issue-solution'
   ) {
-    return normalizedCommand;
+    if (normalizedCommand === 'repo' || normalizedCommand === 'repo-summary') {
+      return 'repo-summary';
+    }
+    if (normalizedCommand === 'issue' || normalizedCommand === 'issue-solution') {
+      return 'issue-solution';
+    }
+    return normalizedCommand as QueryTemplateId;
   }
 
   const normalizedPrompt = prompt.toLowerCase();
@@ -265,11 +308,119 @@ function resolveTemplateId(command: string | undefined, prompt: string): QueryTe
     return 'impact';
   }
 
+  if (/\b(repository|repo|workspace overview|repo structure|codebase overview)\b/.test(normalizedPrompt)) {
+    return 'repo-summary';
+  }
+
+  if (/\b(issue|bug|problem|error|error analysis)\b/.test(normalizedPrompt)) {
+    return 'issue-solution';
+  }
+
   if (/\b(summary|summarize|overview)\b/.test(normalizedPrompt)) {
     return 'summary';
   }
 
   return 'general';
+}
+
+function buildRepositorySummaryContext(graph: WorkspaceGraph, logger: Logger): string {
+  const lines: string[] = [];
+  
+  // Collect metrics
+  const fileCount = new Set<string>();
+  const symbolsByType = new Map<string, number>();
+  const entryPoints: GraphNode[] = [];
+  const testFiles = new Set<string>();
+  const docFiles = new Set<string>();
+  
+  for (const node of graph.nodes.values()) {
+    fileCount.add(node.filePath);
+    const count = symbolsByType.get(node.nodeType) ?? 0;
+    symbolsByType.set(node.nodeType, count + 1);
+    
+    // Identify entry points (high-level exports, main functions, main classes)
+    if ((node.nodeType === 'function' || node.nodeType === 'class' || node.nodeType === 'method') 
+      && (node.symbolName.toLowerCase().includes('main') 
+        || node.symbolName.toLowerCase().includes('init') 
+        || node.symbolName.toLowerCase().includes('start')
+        || node.symbolName === node.filePath.split('/').pop()?.replace(/\.(ts|js)$/, ''))) {
+      entryPoints.push(node);
+    }
+  }
+  
+  // Classify files by role
+  for (const path of fileCount) {
+    if (path.match(/\.test\.|\.spec\.|__tests__/)) {
+      testFiles.add(path);
+    } else if (path.match(/\.md$|README|CHANGELOG|LICENSE/i)) {
+      docFiles.add(path);
+    }
+  }
+  
+  // Build summary
+  lines.push('## Workspace Structure');
+  lines.push(`- Total files: ${fileCount.size}`);
+  lines.push(`- Source files: ${fileCount.size - testFiles.size - docFiles.size}`);
+  lines.push(`- Test files: ${testFiles.size}`);
+  lines.push(`- Documentation files: ${docFiles.size}`);
+  lines.push('');
+  
+  lines.push('## Symbol Distribution');
+  const sortedSymbols = [...symbolsByType.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [type, count] of sortedSymbols.slice(0, 8)) {
+    lines.push(`- ${type}: ${count}`);
+  }
+  lines.push('');
+  
+  lines.push('## Key Entry Points (Potential Roots)');
+  if (entryPoints.length === 0) {
+    lines.push('- No obvious entry points detected; consider checking main files in the root or src/ directory.');
+  } else {
+    for (const ep of entryPoints.slice(0, 10)) {
+      lines.push(`- ${formatNodeLink(ep)}`);
+    }
+  }
+  lines.push('');
+  
+  lines.push('## File Relationships');
+  const relationshipCounts = new Map<string, number>();
+  for (const rel of graph.fileRelationships) {
+    const count = relationshipCounts.get(rel.relationship) ?? 0;
+    relationshipCounts.set(rel.relationship, count + 1);
+  }
+  if (relationshipCounts.size === 0) {
+    lines.push('- No explicit file relationships were extracted.');
+  } else {
+    for (const [type, count] of relationshipCounts) {
+      lines.push(`- ${type}: ${count} link(s)`);
+    }
+  }
+  lines.push('');
+  
+  lines.push('## High-Connectivity Symbols');
+  const incomingEdgeCounts = new Map<string, number>();
+  for (const node of graph.nodes.values()) {
+    const count = node.incomingCalls.length + node.incomingImplementations.length + node.incomingReferences.reads.length + node.incomingReferences.writes.length;
+    if (count > 0) {
+      incomingEdgeCounts.set(node.id, count);
+    }
+  }
+  const hotspots = [...incomingEdgeCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([nodeId, count]) => ({ nodeId, count, node: graph.nodes.get(nodeId) }))
+    .filter((h) => h.node);
+  if (hotspots.length === 0) {
+    lines.push('- No high-connectivity symbols found.');
+  } else {
+    for (const hotspot of hotspots) {
+      const label = hotspot.node ? `${hotspot.node.symbolName} (${hotspot.node.nodeType})` : 'Unknown';
+      lines.push(`- ${label}: ${hotspot.count} incoming link(s)`);
+    }
+  }
+  
+  logger.info(`[VSContext] Repository summary computed: ${fileCount.size} files, ${symbolsByType.size} symbol types, ${entryPoints.length} potential entry points.`);
+  return lines.join('\n');
 }
 
 function extractExplicitNodeId(request: vscode.ChatRequest): string | undefined {
@@ -400,11 +551,11 @@ function buildCaveats(
 ): string[] {
   const caveats: string[] = [];
 
-  if (!focusNode) {
+  if (!focusNode && templateId !== 'repo-summary') {
     caveats.push('No exact focus symbol was resolved, so the answer leans on workspace-level evidence.');
   }
 
-  if (semanticHits.length === 0) {
+  if (semanticHits.length === 0 && templateId !== 'repo-summary') {
     caveats.push('No strong semantic matches were found for the current query.');
   }
 
@@ -414,6 +565,14 @@ function buildCaveats(
 
   if (templateId === 'similar-code' && semanticHits.length < 3) {
     caveats.push('Similarity ranking is thin for this query; compare the top semantic hits with the graph neighborhood.');
+  }
+
+  if (templateId === 'repo-summary') {
+    caveats.push('This is a high-level overview of the workspace structure based on symbol distribution and file roles. Use /trace and /impact on specific symbols for detailed flow analysis.');
+  }
+
+  if (templateId === 'issue-solution') {
+    caveats.push('Issue analysis is based on graph traversal and semantic search; verify proposed solutions by viewing source code directly.');
   }
 
   return caveats;

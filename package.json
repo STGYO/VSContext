@@ -95,6 +95,14 @@
             "description": "Surface tests and coverage links for the resolved symbol."
           },
           {
+            "name": "repo",
+            "description": "Generate a high-level repository structure and metrics summary."
+          },
+          {
+            "name": "issue",
+            "description": "Analyze an issue and suggest affected code, tests, and solutions."
+          },
+          {
             "name": "help",
             "description": "Show VSContext chat participant usage and focus resolution rules."
           }
