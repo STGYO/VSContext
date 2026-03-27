@@ -114,10 +114,11 @@ Deliverables:
 - Query decomposition into graph and vector subqueries.
 - A result synthesizer that merges structural and semantic evidence.
 - Query templates for common tasks such as root cause, blast radius, similar code, and test coverage.
+- Create new  slash commands for the query templates created above.
 
 Acceptance criteria:
 
-- A user can ask broad questions like which files are relevant to a bug or where a function is covered by tests.
+- A user can ask broad questions like which files are relevant to a bug or where a function is covered by tests via Github Copilot when using the extension command in the chat box with slash.
 - Results include a structured explanation and the underlying evidence.
 
 ### Phase 6. Add article-style workflows

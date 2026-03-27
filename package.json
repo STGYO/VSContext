@@ -79,6 +79,22 @@
             "description": "Focus context on upstream impact traversal for the resolved symbol."
           },
           {
+            "name": "root-cause",
+            "description": "Investigate likely root causes using graph and semantic evidence."
+          },
+          {
+            "name": "blast-radius",
+            "description": "Estimate the impact surface and dependent files for the resolved symbol."
+          },
+          {
+            "name": "similar-code",
+            "description": "Find semantically similar code and nearby graph context."
+          },
+          {
+            "name": "test-coverage",
+            "description": "Surface tests and coverage links for the resolved symbol."
+          },
+          {
             "name": "help",
             "description": "Show VSContext chat participant usage and focus resolution rules."
           }
