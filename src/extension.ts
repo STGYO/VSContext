@@ -21,6 +21,7 @@ import {
 import { openExecutionPanel } from './webview/executionPanel';
 import { openImpactPanel } from './webview/impactPanel';
 import { openCodeGraphView } from './views/codeGraphView';
+import { IndexTelemetry, IncrementalChangeTracker } from './indexing/indexTelemetry';
 
 function createGraphCacheUri(context: vscode.ExtensionContext): vscode.Uri | undefined {
   const workspaceFolder = getPrimaryWorkspaceFolder();
@@ -46,8 +47,13 @@ async function reconcileHydratedGraph(
   progress?: vscode.Progress<{ message?: string; increment?: number }>,
   cancellationToken?: vscode.CancellationToken,
 ): Promise<{ upserts: number; deletes: number; cancelled: boolean }> {
+  const telemetry = new IndexTelemetry(logger, 'reconciliation');
+  const changeTracker = new IncrementalChangeTracker();
+
   const workspaceFolder = getPrimaryWorkspaceFolder();
   if (!workspaceFolder) {
+    const metrics = telemetry.finish();
+    telemetry.logSummary(metrics);
     return {
       upserts: 0,
       deletes: 0,
@@ -55,6 +61,8 @@ async function reconcileHydratedGraph(
     };
   }
 
+  // Stage 1: Scan workspace
+  progress?.report({ message: 'VSContext: Scanning workspace files...' });
   const scanResult = await findWorkspaceSourceFiles(maxIndexedFiles);
   const cachedModifiedTimes = graphBuilder.getTrackedFileModifiedTimes();
   const currentPaths = new Set<string>();
@@ -79,14 +87,20 @@ async function reconcileHydratedGraph(
       const cachedMtime = cachedModifiedTimes.get(filePath);
       if (cachedMtime === undefined || Math.abs(cachedMtime - stat.mtime) > 1) {
         changedUris.push(uri);
+        telemetry.recordFileScanAdded();
+        changeTracker.recordModified(filePath);
+      } else {
+        telemetry.recordFileScanSkipped();
       }
     } catch {
       changedUris.push(uri);
+      telemetry.recordFileScanAdded();
+      changeTracker.recordModified(filePath);
     }
 
     checked += 1;
     if (checked % 100 === 0) {
-      progress?.report({ message: `Scanning workspace (${checked}/${scanResult.files.length})` });
+      progress?.report({ message: `VSContext: Scanning workspace (${checked}/${scanResult.files.length})` });
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
@@ -95,14 +109,22 @@ async function reconcileHydratedGraph(
 
   const deletedUris = [...cachedModifiedTimes.keys()]
     .filter((filePath) => !currentPaths.has(filePath))
-    .map((filePath) => vscode.Uri.file(path.join(workspaceFolder.uri.fsPath, filePath)));
+    .map((filePath) => {
+      changeTracker.recordDeleted(filePath);
+      return vscode.Uri.file(path.join(workspaceFolder.uri.fsPath, filePath));
+    });
 
   const totalOperations = deletedUris.length + changedUris.length;
+  telemetry.recordFilesIndexed(changedUris.length, 0, deletedUris.length);
+
+  // Stage 2: Apply changes
   let processed = 0;
 
   for (const uri of deletedUris) {
     if (cancellationToken?.isCancellationRequested) {
       logger.info('[VSContext] Hydrated graph refresh cancelled while removing deleted files.');
+      const metrics = telemetry.finish();
+      telemetry.logSummary(metrics);
       return {
         upserts: 0,
         deletes: processed,
@@ -114,7 +136,7 @@ async function reconcileHydratedGraph(
     processed += 1;
     if (totalOperations > 0) {
       progress?.report({
-        message: `Refreshing graph (${processed}/${totalOperations})`,
+        message: `VSContext: Removing ${processed}/${totalOperations} (${deletedUris.length} deletes, ${changedUris.length} updates)`,
         increment: (100 / totalOperations),
       });
     }
@@ -129,6 +151,8 @@ async function reconcileHydratedGraph(
   for (const uri of changedUris) {
     if (cancellationToken?.isCancellationRequested) {
       logger.info('[VSContext] Hydrated graph refresh cancelled while applying updated files.');
+      const metrics = telemetry.finish();
+      telemetry.logSummary(metrics);
       return {
         upserts: appliedUpserts,
         deletes: deletedUris.length,
@@ -141,7 +165,7 @@ async function reconcileHydratedGraph(
     processed += 1;
     if (totalOperations > 0) {
       progress?.report({
-        message: `Refreshing graph (${processed}/${totalOperations})`,
+        message: `VSContext: Updating ${processed}/${totalOperations} (${deletedUris.length} deletes, ${changedUris.length} updates)`,
         increment: (100 / totalOperations),
       });
     }
@@ -152,7 +176,11 @@ async function reconcileHydratedGraph(
     }
   }
 
-  logger.info(`[VSContext] Hydrated graph refresh applied ${changedUris.length} upserts and ${deletedUris.length} deletes.`);
+  const delta = changeTracker.getDelta();
+  logger.info(`[VSContext] Hydrated graph refresh: ${delta.added.length} added, ${delta.modified.length} modified, ${delta.deleted.length} deleted (${delta.totalChanges} total).`);
+
+  const metrics = telemetry.finish();
+  telemetry.logSummary(metrics);
 
   return {
     upserts: appliedUpserts,
@@ -191,6 +219,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const hydrated = await graphBuilder.hydrateFromCache();
         if (hydrated) {
           treeProvider.refresh();
+          logger.info('[VSContext] Cache hydration completed; refreshing for file changes.');
           await vscode.window.withProgress(
             {
               location: vscode.ProgressLocation.Window,
@@ -208,6 +237,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 );
                 if (!refreshed.cancelled && (refreshed.upserts > 0 || refreshed.deletes > 0)) {
                   treeProvider.refresh();
+                  logger.info(`[VSContext] Reconciliation completed: ${refreshed.upserts} upserts, ${refreshed.deletes} deletes.`);
+                } else if (refreshed.cancelled) {
+                  logger.info('[VSContext] Graph refresh was cancelled by user.');
                 }
               } catch (error) {
                 logger.warn(`Failed to reconcile hydrated graph state. ${String(error)}`);
@@ -217,14 +249,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           return;
         }
 
+        logger.info('[VSContext] No cache found; performing full workspace indexing.');
         await vscode.window.withProgress(
           {
             location: vscode.ProgressLocation.Window,
-            title: 'VSContext: Indexing workspace',
+            title: 'VSContext: Indexing workspace (full build)',
+            cancellable: true,
           },
-          async () => {
-            await graphBuilder.buildWorkspaceGraph();
-            treeProvider.refresh();
+          async (progress) => {
+            try {
+              progress.report({ message: 'Indexing source files...' });
+              await graphBuilder.buildWorkspaceGraph();
+              treeProvider.refresh();
+              logger.info('[VSContext] Full workspace indexing completed.');
+            } catch (error) {
+              logger.error('Workspace indexing failed.', error);
+            }
           },
         );
       })().finally(() => {
@@ -284,6 +324,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             cancellable: true,
           },
           async (progress, token) => {
+            const telemetry = new IndexTelemetry(logger, 'incremental-update');
+            const changeTracker = new IncrementalChangeTracker();
+
             if (graphBuilder.isIndexing()) {
               if (pendingUpserts.size > 0 || pendingDeletes.size > 0) {
                 scheduleIncrementalRefresh('deferred update');
@@ -301,6 +344,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
             let updatedCount = 0;
             const totalUpdates = deleteUris.length + upsertUris.length;
+            telemetry.recordFilesIndexed(0, upsertUris.length, deleteUris.length);
+
             for (let index = 0; index < deleteUris.length; index += 1) {
               if (token.isCancellationRequested) {
                 for (let remaining = index; remaining < deleteUris.length; remaining += 1) {
@@ -312,15 +357,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 }
 
                 logger.info('[VSContext] Incremental indexing update cancelled; remaining files were re-queued.');
+                const metrics = telemetry.finish();
+                telemetry.logSummary(metrics);
                 return;
               }
 
               const uri = deleteUris[index];
+              changeTracker.recordDeleted(toWorkspaceRelativePath(uri));
               await graphBuilder.removeDocument(uri);
               updatedCount += 1;
               if (totalUpdates > 0) {
                 progress.report({
-                  message: `Updating index (${updatedCount}/${totalUpdates})`,
+                  message: `VSContext: Updating index (${updatedCount}/${totalUpdates}) after ${trigger}`,
                   increment: (100 / totalUpdates),
                 });
               }
@@ -338,15 +386,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 }
 
                 logger.info('[VSContext] Incremental indexing update cancelled; remaining files were re-queued.');
+                const metrics = telemetry.finish();
+                telemetry.logSummary(metrics);
                 return;
               }
 
               const uri = upsertUris[index];
+              changeTracker.recordModified(toWorkspaceRelativePath(uri));
               await graphBuilder.upsertDocument(uri);
               updatedCount += 1;
               if (totalUpdates > 0) {
                 progress.report({
-                  message: `Updating index (${updatedCount}/${totalUpdates})`,
+                  message: `VSContext: Updating index (${updatedCount}/${totalUpdates}) after ${trigger}`,
                   increment: (100 / totalUpdates),
                 });
               }
@@ -357,7 +408,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               }
             }
 
-            logger.info(`[VSContext] Incremental indexing updated ${updatedCount} files after ${trigger}.`);
+            const delta = changeTracker.getDelta();
+            logger.info(`[VSContext] Incremental indexing completed after ${trigger}: ${delta.modified.length} updated, ${delta.deleted.length} removed.`);
+            const metrics = telemetry.finish();
+            telemetry.logSummary(metrics);
             treeProvider.refresh();
           },
         );

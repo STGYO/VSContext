@@ -14,6 +14,7 @@ import { Logger } from '../utils/logger';
 import { classifyWorkspaceFile, type WorkspaceFileRole, type WorkspaceFileRoleSummary } from '../utils/fileRoleClassifier';
 import { getPrimaryWorkspaceFolder, toWorkspaceRelativePath } from '../utils/workspaceScanner';
 import { KNOWLEDGE_MODEL_VERSION, type KnowledgeNodeKind, type KnowledgeRelationshipKind } from './knowledgeModel';
+import { CacheVersionManager } from '../indexing/indexTelemetry';
 
 export type GraphNodeType = Extract<KnowledgeNodeKind, 'class' | 'function' | 'method' | 'variable'>;
 
@@ -105,7 +106,7 @@ interface SerializedWorkspaceGraphSnapshot {
   readonly fileModifiedTimes: Record<string, number>;
 }
 
-const GRAPH_CACHE_VERSION = 4;
+const GRAPH_CACHE_VERSION = CacheVersionManager.GRAPH_CACHE_VERSION;
 const PERSIST_DEBOUNCE_MS = 800;
 
 export class WorkspaceGraphBuilder {

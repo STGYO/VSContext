@@ -23,11 +23,6 @@
   },
   "main": "./out/extension.js",
   "activationEvents": [
-    "onView:vscontext.explorer",
-    "onCommand:vscontext.openNode",
-    "onCommand:vscontext.traceExecution",
-    "onCommand:vscontext.findImpact",
-    "onCommand:vscontext.viewCodeGraph",
     "onChatParticipant:vscontext.chat-assistant"
   ],
   "categories": [
@@ -55,6 +50,11 @@
         {
           "id": "vscontext.explorer",
           "name": "VSContext"
+        },
+        {
+          "id": "vscontext.savedSearches",
+          "name": "Saved Searches & Views",
+          "when": "workspaceFolderCount > 0"
         }
       ]
     },
@@ -127,6 +127,61 @@
         "title": "View Code Graph",
         "category": "VSContext",
         "icon": "$(graph)"
+      },
+      {
+        "command": "vscontext.saveCurrentSearch",
+        "title": "Save Current Search",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.saveCurrentView",
+        "title": "Save Current View",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.executeSavedSearch",
+        "title": "Execute Search",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.restoreSavedView",
+        "title": "Restore View",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.renameSearch",
+        "title": "Rename Search",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.renameView",
+        "title": "Rename View",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.deleteSearch",
+        "title": "Delete Search",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.deleteView",
+        "title": "Delete View",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.exportSearches",
+        "title": "Export Searches",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.exportViews",
+        "title": "Export Views",
+        "category": "VSContext"
+      },
+      {
+        "command": "vscontext.clearOldSearches",
+        "title": "Clear Old Searches",
+        "category": "VSContext"
       }
     ],
     "menus": {
@@ -157,6 +212,26 @@
           "command": "vscontext.findImpact",
           "when": "view == vscontext.explorer && (viewItem == vscontext.method || viewItem == vscontext.class || viewItem == vscontext.variable)",
           "group": "inline@2"
+        },
+        {
+          "command": "vscontext.renameSearch",
+          "when": "viewItem == savedSearch",
+          "group": "1_modification"
+        },
+        {
+          "command": "vscontext.deleteSearch",
+          "when": "viewItem == savedSearch",
+          "group": "1_modification"
+        },
+        {
+          "command": "vscontext.renameView",
+          "when": "viewItem == savedView",
+          "group": "1_modification"
+        },
+        {
+          "command": "vscontext.deleteView",
+          "when": "viewItem == savedView",
+          "group": "1_modification"
         }
       ]
     },
@@ -224,7 +299,10 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "test": "mocha --require ts-node/register 'test/**/*.test.ts' --timeout 5000",
+    "test:watch": "mocha --require ts-node/register 'test/**/*.test.ts' --watch --timeout 5000",
+    "test:coverage": "nyc npm test"
   },
   "files": [
     "out",
@@ -241,8 +319,12 @@
     "resources/activity-bar.svg"
   ],
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.17.50",
     "@types/vscode": "^1.95.0",
+    "mocha": "^10.8.2",
+    "nyc": "^15.1.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
     "vscode": "^1.1.37"
   },

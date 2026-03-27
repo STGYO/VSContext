@@ -40,7 +40,8 @@ const symbolIndexer_1 = require("./symbolIndexer");
 const fileRoleClassifier_1 = require("../utils/fileRoleClassifier");
 const workspaceScanner_1 = require("../utils/workspaceScanner");
 const knowledgeModel_1 = require("./knowledgeModel");
-const GRAPH_CACHE_VERSION = 4;
+const indexTelemetry_1 = require("../indexing/indexTelemetry");
+const GRAPH_CACHE_VERSION = indexTelemetry_1.CacheVersionManager.GRAPH_CACHE_VERSION;
 const PERSIST_DEBOUNCE_MS = 800;
 class WorkspaceGraphBuilder {
     indexer;
