@@ -60,29 +60,30 @@ const SUPPORTED_SYMBOL_KINDS = new Set([
     vscode.SymbolKind.Property,
 ]);
 const PRE_SCAN_AST_EXTENSIONS = new Set([
-    '.ts',
-    '.tsx',
-    '.js',
-    '.jsx',
-    '.py',
-    '.rs',
-    '.go',
-    '.java',
-    '.c',
-    '.h',
-    '.cpp',
-    '.cc',
-    '.cxx',
-    '.hpp',
-    '.hh',
-    '.hxx',
-    '.cs',
-    '.php',
-    '.phtml',
-    '.rb',
-    '.kt',
-    '.kts',
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".py",
+    ".rs",
+    ".go",
+    ".java",
+    ".c",
+    ".h",
+    ".cpp",
+    ".cc",
+    ".cxx",
+    ".hpp",
+    ".hh",
+    ".hxx",
+    ".cs",
+    ".php",
+    ".phtml",
+    ".rb",
+    ".kt",
+    ".kts",
 ]);
+const WORKER_BATCH_TIMEOUT_MS = 15_000;
 function serializeIndexedSymbol(symbol) {
     return {
         id: symbol.id,
@@ -100,43 +101,48 @@ function serializeIndexedSymbol(symbol) {
     };
 }
 function deserializeIndexedSymbol(snapshot) {
-    if (!snapshot || typeof snapshot !== 'object') {
+    if (!snapshot || typeof snapshot !== "object") {
         return undefined;
     }
-    if (typeof snapshot.id !== 'string' || snapshot.id.length === 0) {
+    if (typeof snapshot.id !== "string" || snapshot.id.length === 0) {
         return undefined;
     }
-    if (typeof snapshot.symbolName !== 'string' || snapshot.symbolName.length === 0) {
+    if (typeof snapshot.symbolName !== "string" ||
+        snapshot.symbolName.length === 0) {
         return undefined;
     }
-    if (typeof snapshot.filePath !== 'string' || snapshot.filePath.length === 0) {
+    if (typeof snapshot.filePath !== "string" || snapshot.filePath.length === 0) {
         return undefined;
     }
-    if (typeof snapshot.uriString !== 'string' || snapshot.uriString.length === 0) {
+    if (typeof snapshot.uriString !== "string" ||
+        snapshot.uriString.length === 0) {
         return undefined;
     }
-    if (typeof snapshot.symbolKind !== 'number' || !Number.isFinite(snapshot.symbolKind)) {
+    if (typeof snapshot.symbolKind !== "number" ||
+        !Number.isFinite(snapshot.symbolKind)) {
         return undefined;
     }
-    if (typeof snapshot.lineNumber !== 'number' || !Number.isFinite(snapshot.lineNumber) || snapshot.lineNumber < 1) {
+    if (typeof snapshot.lineNumber !== "number" ||
+        !Number.isFinite(snapshot.lineNumber) ||
+        snapshot.lineNumber < 1) {
         return undefined;
     }
-    if (!snapshot.range || typeof snapshot.range !== 'object') {
+    if (!snapshot.range || typeof snapshot.range !== "object") {
         return undefined;
     }
-    const { startLine, startCharacter, endLine, endCharacter, } = snapshot.range;
-    if (typeof startLine !== 'number'
-        || typeof startCharacter !== 'number'
-        || typeof endLine !== 'number'
-        || typeof endCharacter !== 'number'
-        || !Number.isFinite(startLine)
-        || !Number.isFinite(startCharacter)
-        || !Number.isFinite(endLine)
-        || !Number.isFinite(endCharacter)
-        || startLine < 0
-        || startCharacter < 0
-        || endLine < 0
-        || endCharacter < 0) {
+    const { startLine, startCharacter, endLine, endCharacter } = snapshot.range;
+    if (typeof startLine !== "number" ||
+        typeof startCharacter !== "number" ||
+        typeof endLine !== "number" ||
+        typeof endCharacter !== "number" ||
+        !Number.isFinite(startLine) ||
+        !Number.isFinite(startCharacter) ||
+        !Number.isFinite(endLine) ||
+        !Number.isFinite(endCharacter) ||
+        startLine < 0 ||
+        startCharacter < 0 ||
+        endLine < 0 ||
+        endCharacter < 0) {
         return undefined;
     }
     let uri;
@@ -180,8 +186,23 @@ function createSymbolNodeId(uri, symbolName, startLineZeroBased) {
 }
 class SymbolIndexer {
     logger;
+    /**
+     * Optional RelationshipResolver integration.  When set via
+     * `setRelationshipResolver`, resolution attempts made by this indexer are
+     * also recorded in the resolver's stats, enabling a single centralised view
+     * of LSP resolution health across the extension.
+     */
+    resolver;
     constructor(logger) {
         this.logger = logger;
+    }
+    /**
+     * Attach a RelationshipResolver that will collect stats from resolutions
+     * performed by this indexer.  Does not transfer ownership; the caller is
+     * responsible for the resolver's lifecycle.
+     */
+    setRelationshipResolver(resolver) {
+        this.resolver = resolver;
     }
     async indexWorkspaceSymbols() {
         const settings = (0, workspaceScanner_1.getWorkspaceScanSettings)();
@@ -217,7 +238,7 @@ class SymbolIndexer {
             };
         }
         catch (error) {
-            this.logger.error('Workspace symbol indexing failed.', error);
+            this.logger.error("Workspace symbol indexing failed.", error);
             return {
                 indexed,
                 scannedFiles: [],
@@ -274,9 +295,9 @@ class SymbolIndexer {
         }
         const outgoingIds = new Set();
         try {
-            const roots = await vscode.commands.executeCommand('vscode.prepareCallHierarchy', symbol.uri, symbol.range.start);
+            const roots = await vscode.commands.executeCommand("vscode.prepareCallHierarchy", symbol.uri, symbol.range.start);
             for (const root of roots ?? []) {
-                const outgoingCalls = await vscode.commands.executeCommand('vscode.provideOutgoingCalls', root);
+                const outgoingCalls = await vscode.commands.executeCommand("vscode.provideOutgoingCalls", root);
                 for (const outgoingCall of outgoingCalls ?? []) {
                     const nodeId = this.findMatchingSymbolId(outgoingCall.to, allSymbols);
                     if (nodeId && nodeId !== symbol.id) {
@@ -284,8 +305,12 @@ class SymbolIndexer {
                     }
                 }
             }
+            // Record stats in the attached resolver (if any) so that a single
+            // RelationshipResolver can aggregate telemetry from all call sites.
+            this.resolver?.recordExternalResolution("calls", "lsp", outgoingIds.size > 0);
         }
         catch {
+            this.resolver?.recordExternalResolution("calls", "lsp", false);
             return [];
         }
         return [...outgoingIds];
@@ -296,7 +321,7 @@ class SymbolIndexer {
         }
         const implementationIds = new Set();
         try {
-            const implementations = await vscode.commands.executeCommand('vscode.executeImplementationProvider', symbol.uri, symbol.range.start);
+            const implementations = await vscode.commands.executeCommand("vscode.executeImplementationProvider", symbol.uri, symbol.range.start);
             for (const entry of implementations ?? []) {
                 const location = this.toLocation(entry);
                 if (!location) {
@@ -321,7 +346,7 @@ class SymbolIndexer {
         const writes = new Set();
         const documentCache = new Map();
         try {
-            const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', symbol.uri, symbol.range.start);
+            const references = await vscode.commands.executeCommand("vscode.executeReferenceProvider", symbol.uri, symbol.range.start);
             for (const entry of references ?? []) {
                 const location = this.toLocation(entry);
                 if (!location || this.isLikelyDeclarationReference(symbol, location)) {
@@ -332,7 +357,7 @@ class SymbolIndexer {
                     continue;
                 }
                 const accessType = await this.classifyReferenceAccess(symbol.symbolName, location, documentCache);
-                if (accessType === 'writes') {
+                if (accessType === "writes") {
                     writes.add(sourceSymbolId);
                 }
                 else {
@@ -351,8 +376,11 @@ class SymbolIndexer {
     async runParallelPreScan(files, workerCount, workerBatchSize) {
         const preScannableUris = files.filter((uri) => PRE_SCAN_AST_EXTENSIONS.has(path.extname(uri.fsPath).toLowerCase()));
         const filePaths = preScannableUris.map((uri) => uri.fsPath);
-        const workerScriptPath = path.join(__dirname, 'symbolPreScanWorker.js');
-        const emptyResult = { candidateFilePaths: [], symbolMap: {} };
+        const workerScriptPath = path.join(__dirname, "symbolPreScanWorker.js");
+        const emptyResult = {
+            candidateFilePaths: [],
+            symbolMap: {},
+        };
         if (!(0, fs_1.existsSync)(workerScriptPath) || filePaths.length === 0) {
             return {
                 candidateFilePaths: filePaths,
@@ -364,7 +392,10 @@ class SymbolIndexer {
             batches.push(filePaths.slice(index, index + workerBatchSize));
         }
         const maxWorkers = Math.max(1, Math.min(workerCount, batches.length));
-        const aggregate = { candidateFilePaths: [], symbolMap: {} };
+        const aggregate = {
+            candidateFilePaths: [],
+            symbolMap: {},
+        };
         let batchIndex = 0;
         const runWorkerLoop = async () => {
             while (batchIndex < batches.length) {
@@ -399,24 +430,59 @@ class SymbolIndexer {
                 candidateFilePaths: filePaths,
                 symbolMap: {},
             };
-            worker.once('message', (message) => {
-                worker.terminate().catch(() => undefined);
-                resolve(message);
-            });
-            worker.once('error', () => {
-                worker.terminate().catch(() => undefined);
-                resolve(fallback);
-            });
-            worker.once('exit', (code) => {
-                if (code !== 0) {
-                    resolve(fallback);
+            let settled = false;
+            let timeoutHandle;
+            const finish = (result) => {
+                if (settled) {
+                    return;
                 }
+                settled = true;
+                if (timeoutHandle) {
+                    clearTimeout(timeoutHandle);
+                    timeoutHandle = undefined;
+                }
+                resolve(result);
+            };
+            timeoutHandle = setTimeout(() => {
+                this.logger.warn(`[VSContext] Worker pre-scan timed out after ${WORKER_BATCH_TIMEOUT_MS.toString()}ms for ${filePaths.length.toString()} files. Falling back to direct indexing.`);
+                worker.terminate().catch(() => undefined);
+                finish(fallback);
+            }, WORKER_BATCH_TIMEOUT_MS);
+            worker.once("message", (message) => {
+                worker.terminate().catch(() => undefined);
+                finish(message);
+            });
+            worker.once("messageerror", () => {
+                if (settled) {
+                    return;
+                }
+                worker.terminate().catch(() => undefined);
+                finish(fallback);
+            });
+            worker.once("error", (error) => {
+                if (settled) {
+                    return;
+                }
+                this.logger.warn(`[VSContext] Worker pre-scan failed: ${String(error)}. Falling back to direct indexing.`);
+                worker.terminate().catch(() => undefined);
+                finish(fallback);
+            });
+            worker.once("exit", (code) => {
+                if (settled) {
+                    return;
+                }
+                if (code !== 0) {
+                    this.logger.warn(`[VSContext] Worker pre-scan exited with code ${code.toString()}. Falling back to direct indexing.`);
+                    finish(fallback);
+                    return;
+                }
+                finish(fallback);
             });
         });
     }
     async resolveDocumentSymbols(uri) {
         try {
-            const resolved = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', uri);
+            const resolved = await vscode.commands.executeCommand("vscode.executeDocumentSymbolProvider", uri);
             if (!resolved || resolved.length === 0) {
                 if (this.isSymbolDebugEnabled()) {
                     this.logger.info(`[VSContext][debug] Raw symbols: none (${(0, workspaceScanner_1.toWorkspaceRelativePath)(uri)})`);
@@ -470,29 +536,29 @@ class SymbolIndexer {
     }
     toSymbolKindFromFallback(kind) {
         switch (kind) {
-            case 'class':
+            case "class":
                 return vscode.SymbolKind.Class;
-            case 'interface':
+            case "interface":
                 return vscode.SymbolKind.Interface;
-            case 'enum':
+            case "enum":
                 return vscode.SymbolKind.Enum;
-            case 'namespace':
+            case "namespace":
                 return vscode.SymbolKind.Namespace;
-            case 'module':
+            case "module":
                 return vscode.SymbolKind.Module;
-            case 'typeAlias':
+            case "typeAlias":
                 return vscode.SymbolKind.TypeParameter;
-            case 'method':
+            case "method":
                 return vscode.SymbolKind.Method;
-            case 'variable':
+            case "variable":
                 return vscode.SymbolKind.Variable;
-            case 'constant':
+            case "constant":
                 return vscode.SymbolKind.Constant;
-            case 'field':
+            case "field":
                 return vscode.SymbolKind.Field;
-            case 'property':
+            case "property":
                 return vscode.SymbolKind.Property;
-            case 'function':
+            case "function":
             default:
                 return vscode.SymbolKind.Function;
         }
@@ -527,21 +593,23 @@ class SymbolIndexer {
         await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => run()));
     }
     isCallableSymbol(kind) {
-        return kind === vscode.SymbolKind.Function || kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor;
+        return (kind === vscode.SymbolKind.Function ||
+            kind === vscode.SymbolKind.Method ||
+            kind === vscode.SymbolKind.Constructor);
     }
     isVariableLikeSymbol(kind) {
-        return (kind === vscode.SymbolKind.Variable
-            || kind === vscode.SymbolKind.Constant
-            || kind === vscode.SymbolKind.Field
-            || kind === vscode.SymbolKind.Property);
+        return (kind === vscode.SymbolKind.Variable ||
+            kind === vscode.SymbolKind.Constant ||
+            kind === vscode.SymbolKind.Field ||
+            kind === vscode.SymbolKind.Property);
     }
     isClassLikeSymbol(kind) {
-        return (kind === vscode.SymbolKind.Class
-            || kind === vscode.SymbolKind.Interface
-            || kind === vscode.SymbolKind.Enum
-            || kind === vscode.SymbolKind.Module
-            || kind === vscode.SymbolKind.Namespace
-            || kind === vscode.SymbolKind.TypeParameter);
+        return (kind === vscode.SymbolKind.Class ||
+            kind === vscode.SymbolKind.Interface ||
+            kind === vscode.SymbolKind.Enum ||
+            kind === vscode.SymbolKind.Module ||
+            kind === vscode.SymbolKind.Namespace ||
+            kind === vscode.SymbolKind.TypeParameter);
     }
     hasMeaningfulName(name, kind) {
         const normalized = name.trim();
@@ -551,25 +619,31 @@ class SymbolIndexer {
         if (!this.isVariableLikeSymbol(kind)) {
             return true;
         }
-        return !/^<.*>$/.test(normalized) && normalized.toLowerCase() !== 'anonymous';
+        return (!/^<.*>$/.test(normalized) && normalized.toLowerCase() !== "anonymous");
     }
     shouldIndexUri(uri) {
-        if (uri.scheme !== 'file') {
+        if (uri.scheme !== "file") {
             return false;
         }
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
         if (!workspaceFolder) {
             return false;
         }
-        const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath).replace(/\\/g, '/');
-        if (!relativePath || relativePath.startsWith('..')) {
+        const relativePath = path
+            .relative(workspaceFolder.uri.fsPath, uri.fsPath)
+            .replace(/\\/g, "/");
+        if (!relativePath || relativePath.startsWith("..")) {
             return false;
         }
         return !this.isExcludedPath(relativePath);
     }
     isExcludedPath(relativePath) {
-        const segments = relativePath.split('/').map((segment) => segment.toLowerCase());
-        return segments.includes('node_modules') || segments.includes('dist') || segments.includes('build');
+        const segments = relativePath
+            .split("/")
+            .map((segment) => segment.toLowerCase());
+        return (segments.includes("node_modules") ||
+            segments.includes("dist") ||
+            segments.includes("build"));
     }
     logIndexedVariables(symbols) {
         for (const symbol of symbols) {
@@ -598,10 +672,12 @@ class SymbolIndexer {
     }
     symbolKindLabel(kind) {
         const label = vscode.SymbolKind[kind];
-        return typeof label === 'string' ? label : kind.toString();
+        return typeof label === "string" ? label : kind.toString();
     }
     isSymbolDebugEnabled() {
-        return vscode.workspace.getConfiguration('vscontext').get('debugSymbolDetection', false);
+        return vscode.workspace
+            .getConfiguration("vscontext")
+            .get("debugSymbolDetection", false);
     }
     async yieldToEventLoop() {
         await new Promise((resolve) => {
@@ -632,18 +708,18 @@ class SymbolIndexer {
         if (candidate instanceof vscode.Location) {
             return candidate;
         }
-        if (!candidate || typeof candidate !== 'object') {
+        if (!candidate || typeof candidate !== "object") {
             return undefined;
         }
         const locationLink = candidate;
-        if (!(locationLink.targetUri instanceof vscode.Uri) || !(locationLink.targetSelectionRange instanceof vscode.Range)) {
+        if (!(locationLink.targetUri instanceof vscode.Uri) ||
+            !(locationLink.targetSelectionRange instanceof vscode.Range)) {
             return undefined;
         }
         return new vscode.Location(locationLink.targetUri, locationLink.targetSelectionRange);
     }
     findMatchingSymbolIdFromLocation(location, allSymbols) {
-        const candidates = [...allSymbols.values()]
-            .filter((symbol) => symbol.uri.toString() === location.uri.toString());
+        const candidates = [...allSymbols.values()].filter((symbol) => symbol.uri.toString() === location.uri.toString());
         if (candidates.length === 0) {
             return undefined;
         }
@@ -653,10 +729,13 @@ class SymbolIndexer {
             const containsPosition = candidate.range.contains(location.range.start);
             const lineDistance = Math.abs(candidate.range.start.line - location.range.start.line);
             const characterDistance = Math.abs(candidate.range.start.character - location.range.start.character);
-            const rangeSpan = ((candidate.range.end.line - candidate.range.start.line) * 1000)
-                + (candidate.range.end.character - candidate.range.start.character);
+            const rangeSpan = (candidate.range.end.line - candidate.range.start.line) * 1000 +
+                (candidate.range.end.character - candidate.range.start.character);
             const basePenalty = containsPosition ? 0 : 100_000;
-            const score = basePenalty + (lineDistance * 100) + characterDistance + Math.max(0, rangeSpan);
+            const score = basePenalty +
+                lineDistance * 100 +
+                characterDistance +
+                Math.max(0, rangeSpan);
             if (score < bestScore) {
                 bestScore = score;
                 bestCandidate = candidate;
@@ -665,7 +744,8 @@ class SymbolIndexer {
         if (!bestCandidate) {
             return undefined;
         }
-        if (bestScore >= 100_000 && Math.abs(bestCandidate.range.start.line - location.range.start.line) > 3) {
+        if (bestScore >= 100_000 &&
+            Math.abs(bestCandidate.range.start.line - location.range.start.line) > 3) {
             return undefined;
         }
         return bestCandidate.id;
@@ -679,10 +759,10 @@ class SymbolIndexer {
             return undefined;
         }
         const sorted = containingCandidates.sort((left, right) => {
-            const leftSpan = ((left.range.end.line - left.range.start.line) * 1000)
-                + (left.range.end.character - left.range.start.character);
-            const rightSpan = ((right.range.end.line - right.range.start.line) * 1000)
-                + (right.range.end.character - right.range.start.character);
+            const leftSpan = (left.range.end.line - left.range.start.line) * 1000 +
+                (left.range.end.character - left.range.start.character);
+            const rightSpan = (right.range.end.line - right.range.start.line) * 1000 +
+                (right.range.end.character - right.range.start.character);
             if (leftSpan !== rightSpan) {
                 return leftSpan - rightSpan;
             }
@@ -694,8 +774,9 @@ class SymbolIndexer {
         if (symbol.uri.toString() !== location.uri.toString()) {
             return false;
         }
-        return (symbol.range.start.line === location.range.start.line
-            && Math.abs(symbol.range.start.character - location.range.start.character) <= 2);
+        return (symbol.range.start.line === location.range.start.line &&
+            Math.abs(symbol.range.start.character - location.range.start.character) <=
+                2);
     }
     async classifyReferenceAccess(symbolName, location, documentCache) {
         const cacheKey = location.uri.toString();
@@ -706,12 +787,12 @@ class SymbolIndexer {
                 documentCache.set(cacheKey, document);
             }
             catch {
-                return 'reads';
+                return "reads";
             }
         }
         const lineNumber = location.range.start.line;
         if (lineNumber < 0 || lineNumber >= document.lineCount) {
-            return 'reads';
+            return "reads";
         }
         const lineText = document.lineAt(lineNumber).text;
         const startCharacter = location.range.start.character;
@@ -721,42 +802,42 @@ class SymbolIndexer {
         const before = lineText.slice(0, Math.max(0, startCharacter));
         const after = lineText.slice(Math.max(0, endCharacter));
         if (/(\+\+|--)\s*$/.test(before.trimEnd()) || /^\s*(\+\+|--)/.test(after)) {
-            return 'writes';
+            return "writes";
         }
         const trimmedAfter = after.trimStart();
         const assignmentOperators = [
-            '+=',
-            '-=',
-            '*=',
-            '/=',
-            '%=',
-            '&&=',
-            '||=',
-            '??=',
-            '<<=',
-            '>>=',
-            '>>>=',
-            '&=',
-            '|=',
-            '^=',
-            ':=',
+            "+=",
+            "-=",
+            "*=",
+            "/=",
+            "%=",
+            "&&=",
+            "||=",
+            "??=",
+            "<<=",
+            ">>=",
+            ">>>=",
+            "&=",
+            "|=",
+            "^=",
+            ":=",
         ];
         if (assignmentOperators.some((operator) => trimmedAfter.startsWith(operator))) {
-            return 'writes';
+            return "writes";
         }
-        if (trimmedAfter.startsWith('=')
-            && !trimmedAfter.startsWith('==')
-            && !trimmedAfter.startsWith('===')
-            && !trimmedAfter.startsWith('=>')) {
-            return 'writes';
+        if (trimmedAfter.startsWith("=") &&
+            !trimmedAfter.startsWith("==") &&
+            !trimmedAfter.startsWith("===") &&
+            !trimmedAfter.startsWith("=>")) {
+            return "writes";
         }
-        if (/^\s*[,\]\)}]*\s*=/.test(after)) {
-            return 'writes';
+        if (/^\s*[,\]\)}]+\s*=/.test(after)) {
+            return "writes";
         }
-        return 'reads';
+        return "reads";
     }
     normalizeName(name) {
-        return name.trim().replace(/\(\)$/, '');
+        return name.trim().replace(/\(\)$/, "");
     }
 }
 exports.SymbolIndexer = SymbolIndexer;

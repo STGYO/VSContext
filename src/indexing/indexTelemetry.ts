@@ -1,11 +1,16 @@
-import { Logger } from '../utils/logger';
+import { Logger } from "../utils/logger";
 
 /**
  * Metrics for indexing operations and cache management.
  * Used for telemetry, logging, and UI progress reporting.
  */
 export interface IndexingMetrics {
-  readonly stage: 'initialization' | 'hydration' | 'reconciliation' | 'full-build' | 'incremental-update';
+  readonly stage:
+    | "initialization"
+    | "hydration"
+    | "reconciliation"
+    | "full-build"
+    | "incremental-update";
   readonly startTimeMs: number;
   readonly filesScanAdded: number;
   readonly filesScanSkipped: number;
@@ -21,10 +26,20 @@ export interface IndexingMetrics {
   readonly cacheHitsSemanticRecords: number;
   readonly cacheHitRate?: number;
   readonly elapsedMs?: number;
+  // Relationship resolution stats
+  readonly lspResolutionSuccesses?: number;
+  readonly astFallbacks?: number;
+  readonly resolutionFailures?: number;
+  readonly lspSuccessRate?: number;
 }
 
 interface MutableIndexingMetrics {
-  stage: 'initialization' | 'hydration' | 'reconciliation' | 'full-build' | 'incremental-update';
+  stage:
+    | "initialization"
+    | "hydration"
+    | "reconciliation"
+    | "full-build"
+    | "incremental-update";
   startTimeMs: number;
   filesScanAdded: number;
   filesScanSkipped: number;
@@ -38,6 +53,9 @@ interface MutableIndexingMetrics {
   relationshipsAdded: number;
   relationshipsRemoved: number;
   cacheHitsSemanticRecords: number;
+  lspResolutionSuccesses: number;
+  astFallbacks: number;
+  resolutionFailures: number;
 }
 
 export interface CacheVersionInfo {
@@ -66,7 +84,12 @@ export class IndexTelemetry {
 
   public constructor(
     private readonly logger: Logger,
-    stage: 'initialization' | 'hydration' | 'reconciliation' | 'full-build' | 'incremental-update',
+    stage:
+      | "initialization"
+      | "hydration"
+      | "reconciliation"
+      | "full-build"
+      | "incremental-update",
   ) {
     this.metrics = {
       stage,
@@ -83,6 +106,9 @@ export class IndexTelemetry {
       relationshipsAdded: 0,
       relationshipsRemoved: 0,
       cacheHitsSemanticRecords: 0,
+      lspResolutionSuccesses: 0,
+      astFallbacks: 0,
+      resolutionFailures: 0,
     };
   }
 
@@ -94,7 +120,11 @@ export class IndexTelemetry {
     this.metrics.filesScanSkipped += 1;
   }
 
-  public recordFilesIndexed(added: number, updated: number, removed: number): void {
+  public recordFilesIndexed(
+    added: number,
+    updated: number,
+    removed: number,
+  ): void {
     this.metrics.filesIndexedAdded += added;
     this.metrics.filesIndexedUpdated += updated;
     this.metrics.filesIndexedRemoved += removed;
@@ -107,7 +137,7 @@ export class IndexTelemetry {
 
   public recordEdges(added: number, removed: number): void {
     this.metrics.edgesAdded += added;
-    this.metrics.edgesRemoved -= removed;
+    this.metrics.edgesRemoved += removed;
   }
 
   public recordRelationships(added: number, removed: number): void {
@@ -119,34 +149,78 @@ export class IndexTelemetry {
     this.metrics.cacheHitsSemanticRecords += count;
   }
 
+  public recordResolutionSuccess(method: "lsp" | "ast"): void {
+    if (method === "lsp") {
+      this.metrics.lspResolutionSuccesses += 1;
+    } else {
+      this.metrics.astFallbacks += 1;
+    }
+  }
+
+  public recordResolutionFailure(): void {
+    this.metrics.resolutionFailures += 1;
+  }
+
   public finish(): IndexingMetrics {
     const now = Date.now();
     const elapsedMs = now - this.metrics.startTimeMs;
-    const totalScanned = this.metrics.filesScanAdded + this.metrics.filesScanSkipped;
-    const cacheHitRate = totalScanned > 0 ? this.metrics.cacheHitsSemanticRecords / totalScanned : undefined;
+    const totalScanned =
+      this.metrics.filesScanAdded + this.metrics.filesScanSkipped;
+    const cacheHitRate =
+      totalScanned > 0
+        ? this.metrics.cacheHitsSemanticRecords / totalScanned
+        : undefined;
+
+    const totalResolutions =
+      this.metrics.lspResolutionSuccesses +
+      this.metrics.astFallbacks +
+      this.metrics.resolutionFailures;
+    const lspSuccessRate =
+      totalResolutions > 0
+        ? this.metrics.lspResolutionSuccesses / totalResolutions
+        : undefined;
 
     const completed = {
       ...this.metrics,
       elapsedMs,
       cacheHitRate,
+      lspSuccessRate,
     };
 
     return completed;
   }
 
   public logSummary(metrics: IndexingMetrics): void {
-    const stageName = metrics.stage.replace('-', ' ').replace(/^./, (c) => c.toUpperCase());
-    const duration = metrics.elapsedMs ? ` (${metrics.elapsedMs}ms)` : '';
+    const stageName = metrics.stage
+      .replace("-", " ")
+      .replace(/^./, (c) => c.toUpperCase());
+    const duration = metrics.elapsedMs ? ` (${metrics.elapsedMs}ms)` : "";
     const fileOps = `${metrics.filesIndexedAdded} added, ${metrics.filesIndexedUpdated} updated, ${metrics.filesIndexedRemoved} removed`;
     const symbolOps = `${metrics.symbolsAdded} added, ${metrics.symbolsRemoved} removed`;
     const relationshipOps = `${metrics.relationshipsAdded} added, ${metrics.relationshipsRemoved} removed`;
-    const cacheRate = metrics.cacheHitRate ? ` (${(metrics.cacheHitRate * 100).toFixed(1)}%)` : '';
+    const cacheRate = metrics.cacheHitRate
+      ? ` (${(metrics.cacheHitRate * 100).toFixed(1)}%)`
+      : "";
 
     this.logger.info(`[VSContext Telemetry] ${stageName}${duration}`);
     this.logger.info(`  Files: ${fileOps}`);
     this.logger.info(`  Symbols: ${symbolOps}`);
     this.logger.info(`  Relationships: ${relationshipOps}`);
     this.logger.info(`  Semantic cache hits${cacheRate}`);
+
+    const lspSuccesses = metrics.lspResolutionSuccesses ?? 0;
+    const astFallbacks = metrics.astFallbacks ?? 0;
+    const resolutionFailures = metrics.resolutionFailures ?? 0;
+    const totalResolutions = lspSuccesses + astFallbacks + resolutionFailures;
+    if (totalResolutions > 0) {
+      const lspRate =
+        metrics.lspSuccessRate !== undefined
+          ? ` (${(metrics.lspSuccessRate * 100).toFixed(1)}% LSP)`
+          : "";
+      this.logger.info(
+        `  LSP resolutions: ${lspSuccesses} succeeded, ${astFallbacks} fallback, ${resolutionFailures} failed${lspRate}`,
+      );
+    }
   }
 }
 
@@ -179,18 +253,24 @@ export class CacheVersionManager {
     const mismatches: string[] = [];
 
     if (stored.graphCacheVersion !== this.GRAPH_CACHE_VERSION) {
-      mismatches.push(`graph cache v${stored.graphCacheVersion} → v${this.GRAPH_CACHE_VERSION}`);
+      mismatches.push(
+        `graph cache v${stored.graphCacheVersion} → v${this.GRAPH_CACHE_VERSION}`,
+      );
     }
 
     if (stored.semanticCacheVersion !== this.SEMANTIC_CACHE_VERSION) {
-      mismatches.push(`semantic cache v${stored.semanticCacheVersion} → v${this.SEMANTIC_CACHE_VERSION}`);
+      mismatches.push(
+        `semantic cache v${stored.semanticCacheVersion} → v${this.SEMANTIC_CACHE_VERSION}`,
+      );
     }
 
     if (stored.schemaVersion !== this.SCHEMA_VERSION) {
-      mismatches.push(`schema v${stored.schemaVersion} → v${this.SCHEMA_VERSION}`);
+      mismatches.push(
+        `schema v${stored.schemaVersion} → v${this.SCHEMA_VERSION}`,
+      );
     }
 
-    return mismatches.length > 0 ? mismatches.join('; ') : 'unknown mismatch';
+    return mismatches.length > 0 ? mismatches.join("; ") : "unknown mismatch";
   }
 }
 

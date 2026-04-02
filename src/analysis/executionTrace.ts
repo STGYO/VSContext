@@ -22,6 +22,8 @@ export interface ExecutionTraceResult {
   readonly edges: TraversalEdge[];
 }
 
+const TRAVERSAL_TIMEOUT_MS = 10_000;
+
 interface QueueEntry {
   readonly nodeId: string;
   readonly depth: number;
@@ -35,6 +37,7 @@ export async function traceExecutionPath(
   maxDepth = 25,
 ): Promise<ExecutionTraceResult> {
   const normalizedMaxDepth = Math.max(0, Math.min(maxDepth, 25));
+  const deadline = Date.now() + TRAVERSAL_TIMEOUT_MS;
   const visited = new Set<string>();
   const queue: QueueEntry[] = [{ nodeId: startNodeId, depth: 0, parentNodeId: undefined, parentEdgeType: undefined }];
   const nodes: TraversalNode[] = [];
@@ -43,6 +46,10 @@ export async function traceExecutionPath(
   let iterations = 0;
 
   while (queue.length > 0) {
+    if (Date.now() >= deadline) {
+      break;
+    }
+
     const current = queue.shift();
     if (!current || visited.has(current.nodeId)) {
       continue;

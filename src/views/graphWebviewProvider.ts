@@ -1,26 +1,30 @@
-import * as path from 'path';
-import { promises as fs } from 'fs';
-import * as vscode from 'vscode';
+import * as path from "path";
+import { promises as fs } from "fs";
+import * as vscode from "vscode";
 
-import { Logger } from '../utils/logger';
-import type { CodeGraphNode, CodeGraphPayload, NodeNavigationTarget } from './codeGraphView';
+import { Logger } from "../utils/logger";
+import type {
+  CodeGraphNode,
+  CodeGraphPayload,
+  NodeNavigationTarget,
+} from "./codeGraphView";
 
 interface ReadyMessage {
-  readonly type: 'ready';
+  readonly type: "ready";
 }
 
 interface OpenNodeMessage {
-  readonly type: 'openNode';
+  readonly type: "openNode";
   readonly target: NodeNavigationTarget;
 }
 
 interface RequestLoadMoreMessage {
-  readonly type: 'requestLoadMore';
+  readonly type: "requestLoadMore";
 }
 
 interface OpenNodeResultMessage {
-  readonly type: 'openNodeResult';
-  readonly status: 'success' | 'error';
+  readonly type: "openNodeResult";
+  readonly status: "success" | "error";
   readonly message?: string;
 }
 
@@ -68,22 +72,40 @@ export async function openGraphWebviewPanel(
   }
 
   graphPanel = vscode.window.createWebviewPanel(
-    'vscontext.codeGraph',
-    'VSContext Code Graph',
+    "vscontext.codeGraph",
+    "VSContext Code Graph",
     vscode.ViewColumn.Beside,
     {
       enableScripts: true,
       retainContextWhenHidden: false,
       localResourceRoots: [
-        joinExtensionPath(context.extensionUri, 'webview'),
-        joinExtensionPath(context.extensionUri, 'node_modules', 'cytoscape', 'dist'),
-        joinExtensionPath(context.extensionUri, 'node_modules', 'cytoscape-dagre'),
-        joinExtensionPath(context.extensionUri, 'node_modules', 'dagre', 'dist'),
+        joinExtensionPath(context.extensionUri, "webview"),
+        joinExtensionPath(
+          context.extensionUri,
+          "node_modules",
+          "sigma",
+          "dist",
+        ),
+        joinExtensionPath(
+          context.extensionUri,
+          "node_modules",
+          "graphology",
+          "dist",
+        ),
+        joinExtensionPath(
+          context.extensionUri,
+          "node_modules",
+          "dagre",
+          "dist",
+        ),
       ],
     },
   );
 
-  graphPanel.webview.html = await renderGraphHtml(graphPanel.webview, context.extensionUri);
+  graphPanel.webview.html = await renderGraphHtml(
+    graphPanel.webview,
+    context.extensionUri,
+  );
 
   graphPanelDisposables.push(
     graphPanel.webview.onDidReceiveMessage(async (message: unknown) => {
@@ -95,12 +117,12 @@ export async function openGraphWebviewPanel(
         return;
       }
 
-      if (message.type === 'ready') {
+      if (message.type === "ready") {
         await postInitialGraphData(graphPanel.webview);
         return;
       }
 
-      if (message.type === 'requestLoadMore') {
+      if (message.type === "requestLoadMore") {
         await postNextGraphChunk(graphPanel.webview);
         return;
       }
@@ -108,15 +130,18 @@ export async function openGraphWebviewPanel(
       try {
         await onOpenNode(message.target);
         await postOpenNodeResult(graphPanel.webview, {
-          type: 'openNodeResult',
-          status: 'success',
+          type: "openNodeResult",
+          status: "success",
         });
       } catch (error) {
-        logger.error('Failed to open node from code graph panel.', error);
+        logger.error("Failed to open node from code graph panel.", error);
         await postOpenNodeResult(graphPanel.webview, {
-          type: 'openNodeResult',
-          status: 'error',
-          message: error instanceof Error ? error.message : 'Unable to open selected symbol.',
+          type: "openNodeResult",
+          status: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Unable to open selected symbol.",
         });
       }
     }),
@@ -132,7 +157,9 @@ export async function openGraphWebviewPanel(
   );
 }
 
-function createWebviewGraphSession(payload: CodeGraphPayload): WebviewGraphSession {
+function createWebviewGraphSession(
+  payload: CodeGraphPayload,
+): WebviewGraphSession {
   const sortedNodes = [...payload.nodes].sort((left, right) => {
     const degreeDiff = (right.degree || 0) - (left.degree || 0);
     if (degreeDiff !== 0) {
@@ -151,8 +178,8 @@ function createWebviewGraphSession(payload: CodeGraphPayload): WebviewGraphSessi
       visibleNodeIds.add(node.id);
     }
   } else {
-    const fileNodes = sortedNodes.filter((node) => node.type === 'file');
-    const nonFileNodes = sortedNodes.filter((node) => node.type !== 'file');
+    const fileNodes = sortedNodes.filter((node) => node.type === "file");
+    const nonFileNodes = sortedNodes.filter((node) => node.type !== "file");
 
     for (const fileNode of fileNodes) {
       visibleNodeIds.add(fileNode.id);
@@ -187,7 +214,7 @@ async function postInitialGraphData(webview: vscode.Webview): Promise<void> {
 
   const visiblePayload = buildVisiblePayload(graphSession);
   await webview.postMessage({
-    type: 'setGraphData',
+    type: "setGraphData",
     payload: visiblePayload,
     loadState: buildLoadState(graphSession),
     totals: graphSession.totals,
@@ -206,7 +233,7 @@ async function postNextGraphChunk(webview: vscode.Webview): Promise<void> {
 
   const appendPayload = buildAppendPayload(graphSession, nextNodes);
   await webview.postMessage({
-    type: 'appendGraphData',
+    type: "appendGraphData",
     payload: appendPayload,
     loadState: buildLoadState(graphSession),
     totals: graphSession.totals,
@@ -214,14 +241,22 @@ async function postNextGraphChunk(webview: vscode.Webview): Promise<void> {
   });
 }
 
-async function postOpenNodeResult(webview: vscode.Webview, result: OpenNodeResultMessage): Promise<void> {
+async function postOpenNodeResult(
+  webview: vscode.Webview,
+  result: OpenNodeResultMessage,
+): Promise<void> {
   await webview.postMessage(result);
 }
 
 function buildVisiblePayload(session: WebviewGraphSession): CodeGraphPayload {
-  const nodes = session.sourcePayload.nodes.filter((node) => session.visibleNodeIds.has(node.id));
+  const nodes = session.sourcePayload.nodes.filter((node) =>
+    session.visibleNodeIds.has(node.id),
+  );
   const edges = session.sourcePayload.edges.filter((edge) => {
-    return session.visibleNodeIds.has(edge.source) && session.visibleNodeIds.has(edge.target);
+    return (
+      session.visibleNodeIds.has(edge.source) &&
+      session.visibleNodeIds.has(edge.target)
+    );
   });
 
   return {
@@ -231,7 +266,10 @@ function buildVisiblePayload(session: WebviewGraphSession): CodeGraphPayload {
   };
 }
 
-function buildAppendPayload(session: WebviewGraphSession, appendedNodes: CodeGraphNode[]): CodeGraphPayload {
+function buildAppendPayload(
+  session: WebviewGraphSession,
+  appendedNodes: CodeGraphNode[],
+): CodeGraphPayload {
   if (appendedNodes.length === 0) {
     return {
       nodes: [],
@@ -242,7 +280,10 @@ function buildAppendPayload(session: WebviewGraphSession, appendedNodes: CodeGra
 
   const appendedNodeIds = new Set(appendedNodes.map((node) => node.id));
   const edges = session.sourcePayload.edges.filter((edge) => {
-    if (!session.visibleNodeIds.has(edge.source) || !session.visibleNodeIds.has(edge.target)) {
+    if (
+      !session.visibleNodeIds.has(edge.source) ||
+      !session.visibleNodeIds.has(edge.target)
+    ) {
       return false;
     }
 
@@ -267,66 +308,99 @@ function buildLoadState(session: WebviewGraphSession): GraphLoadState {
 }
 
 function isGraphMessage(message: unknown): message is GraphMessage {
-  if (!message || typeof message !== 'object') {
+  if (!message || typeof message !== "object") {
     return false;
   }
 
   const candidate = message as Record<string, unknown>;
-  if (candidate.type === 'ready') {
+  if (candidate.type === "ready") {
     return true;
   }
 
-  if (candidate.type === 'requestLoadMore') {
+  if (candidate.type === "requestLoadMore") {
     return true;
   }
 
-  if (candidate.type !== 'openNode' || typeof candidate.target !== 'object' || candidate.target === null) {
+  if (
+    candidate.type !== "openNode" ||
+    typeof candidate.target !== "object" ||
+    candidate.target === null
+  ) {
     return false;
   }
 
   const target = candidate.target as Record<string, unknown>;
   return (
-    typeof target.uriString === 'string'
-    && typeof target.line === 'number'
-    && typeof target.rangeStartLine === 'number'
-    && typeof target.rangeStartCharacter === 'number'
-    && typeof target.rangeEndLine === 'number'
-    && typeof target.rangeEndCharacter === 'number'
+    typeof target.uriString === "string" &&
+    typeof target.line === "number" &&
+    typeof target.rangeStartLine === "number" &&
+    typeof target.rangeStartCharacter === "number" &&
+    typeof target.rangeEndLine === "number" &&
+    typeof target.rangeEndCharacter === "number"
   );
 }
 
-async function renderGraphHtml(webview: vscode.Webview, extensionUri: vscode.Uri): Promise<string> {
-  const htmlUri = joinExtensionPath(extensionUri, 'webview', 'graph.html');
-  const cssUri = webview.asWebviewUri(joinExtensionPath(extensionUri, 'webview', 'graph.css'));
-  const scriptUri = webview.asWebviewUri(joinExtensionPath(extensionUri, 'webview', 'graph.js'));
-  const cytoscapeUri = webview.asWebviewUri(
-    joinExtensionPath(extensionUri, 'node_modules', 'cytoscape', 'dist', 'cytoscape.min.js'),
+async function renderGraphHtml(
+  webview: vscode.Webview,
+  extensionUri: vscode.Uri,
+): Promise<string> {
+  const htmlUri = joinExtensionPath(extensionUri, "webview", "graph.html");
+  const cssUri = webview.asWebviewUri(
+    joinExtensionPath(extensionUri, "webview", "graph.css"),
+  );
+  const scriptUri = webview.asWebviewUri(
+    joinExtensionPath(extensionUri, "webview", "graph.js"),
+  );
+  const sigmaUri = webview.asWebviewUri(
+    joinExtensionPath(
+      extensionUri,
+      "node_modules",
+      "sigma",
+      "dist",
+      "sigma.min.js",
+    ),
+  );
+  const graphologyUri = webview.asWebviewUri(
+    joinExtensionPath(
+      extensionUri,
+      "node_modules",
+      "graphology",
+      "dist",
+      "graphology.umd.min.js",
+    ),
   );
   const dagreUri = webview.asWebviewUri(
-    joinExtensionPath(extensionUri, 'node_modules', 'dagre', 'dist', 'dagre.min.js'),
+    joinExtensionPath(
+      extensionUri,
+      "node_modules",
+      "dagre",
+      "dist",
+      "dagre.min.js",
+    ),
   );
-  const cytoscapeDagreUri = webview.asWebviewUri(
-    joinExtensionPath(extensionUri, 'node_modules', 'cytoscape-dagre', 'cytoscape-dagre.js'),
+  const sigmaRendererUri = webview.asWebviewUri(
+    joinExtensionPath(extensionUri, "webview", "sigmaRenderer.js"),
   );
 
   const nonce = createNonce();
   let template: string;
 
   try {
-    template = await fs.readFile(htmlUri.fsPath, 'utf8');
+    template = await fs.readFile(htmlUri.fsPath, "utf8");
   } catch {
     template = fallbackTemplate();
   }
 
   return template
-    .replaceAll('{{cspSource}}', webview.cspSource)
-    .replaceAll('{{nonce}}', nonce)
-    .replaceAll('{{styleUri}}', cssUri.toString())
-    .replaceAll('{{scriptUri}}', scriptUri.toString())
-    .replaceAll('{{cytoscapeUri}}', cytoscapeUri.toString())
-    .replaceAll('{{dagreUri}}', dagreUri.toString())
-    .replaceAll('{{cytoscapeDagreUri}}', cytoscapeDagreUri.toString())
-    .replaceAll('{{htmlDir}}', path.dirname(htmlUri.fsPath));
+    .replaceAll("{{cspSource}}", webview.cspSource)
+    .replaceAll("{{nonce}}", nonce)
+    .replaceAll("{{styleUri}}", cssUri.toString())
+    .replaceAll("{{scriptUri}}", scriptUri.toString())
+    .replaceAll("{{sigmaUri}}", sigmaUri.toString())
+    .replaceAll("{{graphologyUri}}", graphologyUri.toString())
+    .replaceAll("{{dagreUri}}", dagreUri.toString())
+    .replaceAll("{{sigmaRendererUri}}", sigmaRendererUri.toString())
+    .replaceAll("{{htmlDir}}", path.dirname(htmlUri.fsPath));
 }
 
 function fallbackTemplate(): string {
@@ -335,7 +409,7 @@ function fallbackTemplate(): string {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {{cspSource}} data:; style-src {{cspSource}}; script-src 'nonce-{{nonce}}';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {{cspSource}} data: blob:; style-src {{cspSource}} 'nonce-{{nonce}}'; script-src 'nonce-{{nonce}}';" />
   <title>VSContext Code Graph</title>
   <link nonce="{{nonce}}" rel="stylesheet" href="{{styleUri}}" />
 </head>
@@ -434,17 +508,19 @@ function fallbackTemplate(): string {
       <div id="node-tooltip" role="tooltip" hidden></div>
     </section>
   </div>
-  <script nonce="{{nonce}}" src="{{cytoscapeUri}}"></script>
+  <script nonce="{{nonce}}" src="{{graphologyUri}}"></script>
+  <script nonce="{{nonce}}" src="{{sigmaUri}}"></script>
   <script nonce="{{nonce}}" src="{{dagreUri}}"></script>
-  <script nonce="{{nonce}}" src="{{cytoscapeDagreUri}}"></script>
+  <script nonce="{{nonce}}" src="{{sigmaRendererUri}}"></script>
   <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
 </body>
 </html>`;
 }
 
 function createNonce(): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let nonce = '';
+  const alphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let nonce = "";
 
   for (let index = 0; index < 24; index += 1) {
     const randomIndex = Math.floor(Math.random() * alphabet.length);
@@ -454,6 +530,9 @@ function createNonce(): string {
   return nonce;
 }
 
-function joinExtensionPath(baseUri: vscode.Uri, ...segments: string[]): vscode.Uri {
+function joinExtensionPath(
+  baseUri: vscode.Uri,
+  ...segments: string[]
+): vscode.Uri {
   return vscode.Uri.file(path.join(baseUri.fsPath, ...segments));
 }

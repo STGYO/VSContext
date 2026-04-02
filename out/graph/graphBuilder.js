@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.WorkspaceGraphBuilder = void 0;
+const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const symbolIndexer_1 = require("./symbolIndexer");
@@ -41,6 +42,7 @@ const fileRoleClassifier_1 = require("../utils/fileRoleClassifier");
 const workspaceScanner_1 = require("../utils/workspaceScanner");
 const knowledgeModel_1 = require("./knowledgeModel");
 const indexTelemetry_1 = require("../indexing/indexTelemetry");
+const graphDatabase_1 = require("./graphDatabase");
 const GRAPH_CACHE_VERSION = indexTelemetry_1.CacheVersionManager.GRAPH_CACHE_VERSION;
 const PERSIST_DEBOUNCE_MS = 800;
 class WorkspaceGraphBuilder {
@@ -63,10 +65,34 @@ class WorkspaceGraphBuilder {
     supplementaryFileRelationshipIndex = new Map();
     persistTimer;
     persistQueue = Promise.resolve();
+    lastIndexResult;
+    /** SQLite database for persistent graph storage (Phase 9A). */
+    db;
+    dbUri;
     constructor(indexer, logger, cacheFileUri) {
         this.indexer = indexer;
         this.logger = logger;
         this.cacheFileUri = cacheFileUri;
+    }
+    /**
+     * Open (or create) the SQLite graph database at `dbUri`.
+     * Must be called before `hydrateFromCache()` / `buildWorkspaceGraph()` for
+     * SQLite persistence to be active.  Failures are non-fatal – the builder
+     * will fall back to the legacy JSON cache.
+     */
+    initializeDatabase(dbUri) {
+        this.dbUri = dbUri;
+        try {
+            const dir = path.dirname(dbUri.fsPath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+            this.db = graphDatabase_1.GraphDatabase.open(dbUri.fsPath);
+        }
+        catch (error) {
+            this.logger.warn(`[VSContext] Failed to open graph database: ${error}. Will use in-memory only.`);
+            this.db = undefined;
+        }
     }
     markDirty() {
         this.dirty = true;
@@ -86,7 +112,132 @@ class WorkspaceGraphBuilder {
     getTrackedFileModifiedTimes() {
         return new Map(this.fileModifiedTimes);
     }
+    getLastIndexResult() {
+        return this.lastIndexResult;
+    }
     async hydrateFromCache() {
+        // ---- DB-first path (Phase 9A) -----------------------------------------
+        if (this.db) {
+            const dbSnapshot = this.db.snapshot();
+            if (dbSnapshot.nodes.size > 0) {
+                // Reconstruct in-memory graph from the SQLite snapshot.
+                const nodeMap = new Map();
+                for (const [id, row] of dbSnapshot.nodes) {
+                    nodeMap.set(id, {
+                        id: row.id,
+                        symbolName: row.symbolName,
+                        symbolKind: row.symbolKind,
+                        nodeType: row.nodeType,
+                        filePath: row.filePath,
+                        uriString: row.uriString,
+                        lineNumber: row.lineNumber,
+                        rangeStartLine: row.rangeStartLine,
+                        rangeStartCharacter: row.rangeStartCharacter,
+                        rangeEndLine: row.rangeEndLine,
+                        rangeEndCharacter: row.rangeEndCharacter,
+                        outgoingCalls: [],
+                        implementations: [],
+                        references: this.emptyReferenceBuckets(),
+                        incomingCalls: [],
+                        incomingImplementations: [],
+                        incomingReferences: this.emptyReferenceBuckets(),
+                    });
+                }
+                // Populate outgoing edge arrays on each node.
+                for (const edge of dbSnapshot.allEdges) {
+                    const sourceNode = nodeMap.get(edge.sourceId);
+                    if (!sourceNode) {
+                        continue;
+                    }
+                    switch (edge.type) {
+                        case "calls":
+                            this.addUniqueValue(sourceNode.outgoingCalls, edge.targetId);
+                            break;
+                        case "implements":
+                            this.addUniqueValue(sourceNode.implementations, edge.targetId);
+                            break;
+                        case "reads":
+                            this.addUniqueValue(sourceNode.references.reads, edge.targetId);
+                            break;
+                        case "writes":
+                            this.addUniqueValue(sourceNode.references.writes, edge.targetId);
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                this.trimDanglingRelationshipsFor(nodeMap);
+                this.populateIncomingRelationships(nodeMap);
+                // Restore symbol cache.
+                const restoredSymbolCache = new Map();
+                for (const [nodeId, jsonStr] of dbSnapshot.symbolCacheJson) {
+                    try {
+                        const sym = (0, symbolIndexer_1.deserializeIndexedSymbol)(JSON.parse(jsonStr));
+                        if (sym) {
+                            restoredSymbolCache.set(nodeId, sym);
+                        }
+                    }
+                    catch {
+                        // Skip corrupted cache entries.
+                    }
+                }
+                for (const node of nodeMap.values()) {
+                    if (!restoredSymbolCache.has(node.id)) {
+                        restoredSymbolCache.set(node.id, this.toIndexedSymbolFromNode(node));
+                    }
+                }
+                for (const symbolId of [...restoredSymbolCache.keys()]) {
+                    if (!nodeMap.has(symbolId)) {
+                        restoredSymbolCache.delete(symbolId);
+                    }
+                }
+                // Restore supplementaryFileRelationshipIndex so incremental updates
+                // do not accidentally wipe unrelated file relationships.
+                const supplementaryIndex = new Map();
+                for (const rel of dbSnapshot.fileRelationships) {
+                    const entry = {
+                        sourceFilePath: rel.sourceFilePath,
+                        targetFilePath: rel.targetFilePath,
+                        sourceUriString: rel.sourceUriString,
+                        targetUriString: rel.targetUriString,
+                        relationship: rel.relationship,
+                    };
+                    const existing = supplementaryIndex.get(rel.sourceFilePath);
+                    if (existing) {
+                        existing.push(entry);
+                    }
+                    else {
+                        supplementaryIndex.set(rel.sourceFilePath, [entry]);
+                    }
+                }
+                this.supplementaryFileRelationshipIndex = supplementaryIndex;
+                // Restore metadata.
+                const builtAt = dbSnapshot.builtAtIso
+                    ? new Date(dbSnapshot.builtAtIso)
+                    : undefined;
+                const isBuiltAtValid = builtAt && !Number.isNaN(builtAt.getTime());
+                const fileRoleSummary = dbSnapshot.fileRoleSummaryJson
+                    ? this.parseFileRoleSummary(JSON.parse(dbSnapshot.fileRoleSummaryJson))
+                    : undefined;
+                this.cachedGraph = {
+                    nodes: nodeMap,
+                    fileIndex: this.createFileIndex(nodeMap),
+                    fileRelationships: this.flattenSupplementaryFileRelationships(),
+                    builtAt: isBuiltAtValid ? builtAt : undefined,
+                    fileRoleSummary,
+                };
+                this.symbolCache = restoredSymbolCache;
+                this.fileModifiedTimes = dbSnapshot.fileModifiedTimes;
+                this.rebuildFileRelationshipIndex(nodeMap);
+                this.initialIndexCompleted = true;
+                this.dirty = false;
+                const edgeCount = [...nodeMap.values()].reduce((count, node) => count + this.relationshipCountForNode(node), 0);
+                this.logger.info(`Hydrated workspace graph from SQLite with ${nodeMap.size} nodes and ${edgeCount} edges.`);
+                return true;
+            }
+            // DB is open but empty – fall through to JSON migration path below.
+        }
+        // ---- JSON path (legacy + one-time migration) --------------------------
         if (!this.cacheFileUri) {
             return false;
         }
@@ -103,15 +254,15 @@ class WorkspaceGraphBuilder {
         }
         let parsed;
         try {
-            parsed = JSON.parse(Buffer.from(rawContent).toString('utf8'));
+            parsed = JSON.parse(Buffer.from(rawContent).toString("utf8"));
         }
         catch {
-            this.logger.warn('VSContext graph cache is not valid JSON. Falling back to full rebuild.');
+            this.logger.warn("VSContext graph cache is not valid JSON. Falling back to full rebuild.");
             return false;
         }
         const snapshot = this.parseSnapshot(parsed);
         if (!snapshot) {
-            this.logger.warn('VSContext graph cache schema is invalid. Falling back to full rebuild.');
+            this.logger.warn("VSContext graph cache schema is invalid. Falling back to full rebuild.");
             return false;
         }
         const nodeMap = new Map();
@@ -135,7 +286,9 @@ class WorkspaceGraphBuilder {
                 restoredSymbolCache.delete(symbolId);
             }
         }
-        const builtAt = snapshot.builtAtIso ? new Date(snapshot.builtAtIso) : undefined;
+        const builtAt = snapshot.builtAtIso
+            ? new Date(snapshot.builtAtIso)
+            : undefined;
         const isBuiltAtValid = builtAt && !Number.isNaN(builtAt.getTime());
         this.cachedGraph = {
             nodes: nodeMap,
@@ -150,7 +303,19 @@ class WorkspaceGraphBuilder {
         this.initialIndexCompleted = true;
         this.dirty = false;
         const edgeCount = [...nodeMap.values()].reduce((count, node) => count + this.relationshipCountForNode(node), 0);
-        this.logger.info(`Hydrated workspace graph from cache with ${nodeMap.size} nodes and ${edgeCount} edges.`);
+        this.logger.info(`Hydrated workspace graph from JSON cache with ${nodeMap.size} nodes and ${edgeCount} edges.`);
+        // If a DB is open, migrate the JSON data into SQLite and delete the file.
+        if (this.db) {
+            this.logger.info("[VSContext] Migrating JSON graph cache to SQLite database.");
+            this.persistToDatabase();
+            try {
+                await vscode.workspace.fs.delete(this.cacheFileUri);
+                this.logger.info("[VSContext] Deleted legacy JSON graph cache.");
+            }
+            catch {
+                // Non-fatal – old JSON file will simply be ignored on next start-up.
+            }
+        }
         return true;
     }
     async flushPersistence() {
@@ -159,6 +324,29 @@ class WorkspaceGraphBuilder {
             this.persistTimer = undefined;
         }
         await this.enqueuePersistence();
+    }
+    async dispose() {
+        if (this.buildPromise) {
+            try {
+                await this.buildPromise;
+            }
+            catch {
+                // Ignore disposal-time build failures.
+            }
+        }
+        if (this.db && this.initialIndexCompleted) {
+            this.persistToDatabase();
+        }
+        await this.flushPersistence();
+        if (this.db) {
+            try {
+                this.db.close();
+            }
+            catch (error) {
+                this.logger.warn(`[VSContext] Failed to close graph database cleanly: ${String(error)}`);
+            }
+            this.db = undefined;
+        }
     }
     async getGraph() {
         if (!this.dirty) {
@@ -177,7 +365,7 @@ class WorkspaceGraphBuilder {
         await this.upsertDocument(uri);
     }
     async upsertDocument(uri) {
-        if (uri.scheme !== 'file') {
+        if (uri.scheme !== "file") {
             return;
         }
         if (!this.initialIndexCompleted) {
@@ -219,10 +407,76 @@ class WorkspaceGraphBuilder {
             this.fileModifiedTimes.set(filePath, modifiedAt);
         }
         this.dirty = false;
-        this.schedulePersistence();
+        // ---- SQLite persistence (Phase 9A) ------------------------------------
+        if (this.db) {
+            const db = this.db;
+            db.transaction(() => {
+                // Delete edges and symbol cache BEFORE nodes so the subqueries resolve.
+                db.deleteEdgesForFile(filePath);
+                db.deleteSymbolCacheForFile(filePath);
+                db.deleteNodesByFile(filePath);
+                db.deleteFileRelationshipsForFile(filePath);
+                // Upsert new nodes.
+                for (const symbol of symbols) {
+                    db.upsertNode({
+                        id: symbol.id,
+                        symbolName: symbol.symbolName,
+                        symbolKind: symbol.symbolKind,
+                        nodeType: this.resolveNodeType(symbol.symbolKind),
+                        filePath: symbol.filePath,
+                        uriString: symbol.uri.toString(),
+                        lineNumber: symbol.lineNumber,
+                        rangeStartLine: symbol.range.start.line + 1,
+                        rangeStartCharacter: symbol.range.start.character,
+                        rangeEndLine: symbol.range.end.line + 1,
+                        rangeEndCharacter: symbol.range.end.character,
+                    });
+                }
+                // Upsert outgoing edges from the updated in-memory nodes.
+                for (const nodeId of this.cachedGraph.fileIndex.get(filePath) ?? []) {
+                    const node = this.cachedGraph.nodes.get(nodeId);
+                    if (!node) {
+                        continue;
+                    }
+                    for (const targetId of node.outgoingCalls) {
+                        db.upsertEdge(nodeId, targetId, "calls");
+                    }
+                    for (const targetId of node.implementations) {
+                        db.upsertEdge(nodeId, targetId, "implements");
+                    }
+                    for (const targetId of node.references.reads) {
+                        db.upsertEdge(nodeId, targetId, "reads");
+                    }
+                    for (const targetId of node.references.writes) {
+                        db.upsertEdge(nodeId, targetId, "writes");
+                    }
+                }
+                // Upsert symbol cache for new symbols.
+                for (const symbol of symbols) {
+                    const cached = this.symbolCache.get(symbol.id);
+                    if (cached) {
+                        db.upsertSymbolCache(symbol.id, JSON.stringify((0, symbolIndexer_1.serializeIndexedSymbol)(cached)));
+                    }
+                }
+                // File modified time.
+                if (modifiedAt !== undefined) {
+                    db.setFileModifiedTime(filePath, modifiedAt);
+                }
+                // File relationships – write only the ones for this source file.
+                for (const rel of this.flattenSupplementaryFileRelationships()) {
+                    if (rel.sourceFilePath === filePath) {
+                        db.upsertFileRelationship(rel.sourceFilePath, rel.targetFilePath, rel.sourceUriString, rel.targetUriString, rel.relationship);
+                    }
+                }
+            });
+        }
+        else {
+            // No DB – fall back to legacy JSON persistence.
+            this.schedulePersistence();
+        }
     }
     async removeDocument(uri) {
-        if (uri.scheme !== 'file') {
+        if (uri.scheme !== "file") {
             return;
         }
         if (!this.initialIndexCompleted) {
@@ -250,7 +504,22 @@ class WorkspaceGraphBuilder {
             fileRoleSummary: this.cachedGraph.fileRoleSummary,
         };
         this.dirty = false;
-        this.schedulePersistence();
+        // ---- SQLite persistence (Phase 9A) ------------------------------------
+        if (this.db) {
+            const db = this.db;
+            db.transaction(() => {
+                // Delete edges and symbol cache BEFORE nodes so subqueries resolve.
+                db.deleteEdgesForFile(filePath);
+                db.deleteSymbolCacheForFile(filePath);
+                db.deleteNodesByFile(filePath);
+                db.deleteFileRelationshipsForFile(filePath);
+                db.deleteFileModifiedTime(filePath);
+            });
+        }
+        else {
+            // No DB – fall back to legacy JSON persistence.
+            this.schedulePersistence();
+        }
     }
     async buildWorkspaceGraph() {
         if (this.buildPromise) {
@@ -265,11 +534,13 @@ class WorkspaceGraphBuilder {
         }
     }
     async doBuildWorkspaceGraph() {
-        this.logger.info('Building workspace graph.');
+        this.logger.info("Building workspace graph.");
+        this.lastIndexResult = undefined;
         try {
             this.fileRelationshipIndex = new Map();
             this.supplementaryFileRelationshipIndex = new Map();
             const indexResult = await this.indexer.indexWorkspaceSymbols();
+            this.lastIndexResult = indexResult;
             const indexedSymbols = indexResult.indexed;
             this.symbolCache = new Map(indexedSymbols);
             const nodeMap = this.createNodeMap(indexedSymbols);
@@ -289,11 +560,17 @@ class WorkspaceGraphBuilder {
             this.dirty = false;
             this.logIndexingSummary(indexResult);
             this.logger.info(`Workspace graph built with ${nodeMap.size} nodes and ${edgeCount} edges.`);
-            this.schedulePersistence();
+            if (this.db) {
+                this.persistToDatabase();
+            }
+            else {
+                this.schedulePersistence();
+            }
             return this.cachedGraph;
         }
         catch (error) {
-            this.logger.error('Workspace graph build failed.', error);
+            this.logger.error("Workspace graph build failed.", error);
+            this.lastIndexResult = undefined;
             this.cachedGraph = {
                 nodes: new Map(),
                 fileIndex: new Map(),
@@ -305,7 +582,12 @@ class WorkspaceGraphBuilder {
             this.fileModifiedTimes = new Map();
             this.initialIndexCompleted = true;
             this.dirty = false;
-            this.schedulePersistence();
+            if (this.db) {
+                this.persistToDatabase();
+            }
+            else {
+                this.schedulePersistence();
+            }
             return this.cachedGraph;
         }
     }
@@ -373,7 +655,7 @@ class WorkspaceGraphBuilder {
                     if (!targetNode) {
                         continue;
                     }
-                    this.linkRelationship(node, targetNode, 'calls', fileRecords);
+                    this.linkRelationship(node, targetNode, "calls", fileRecords);
                 }
             }
             const implementations = await this.indexer.resolveImplementations(symbol, this.symbolCache);
@@ -382,7 +664,7 @@ class WorkspaceGraphBuilder {
                 if (!targetNode) {
                     continue;
                 }
-                this.linkRelationship(node, targetNode, 'implements', fileRecords);
+                this.linkRelationship(node, targetNode, "implements", fileRecords);
             }
             if (this.isVariableLikeSymbol(symbol.symbolKind)) {
                 const variableReferences = await this.indexer.resolveVariableReferences(symbol, this.symbolCache);
@@ -392,14 +674,14 @@ class WorkspaceGraphBuilder {
                     if (!sourceNode) {
                         continue;
                     }
-                    this.linkRelationship(sourceNode, node, 'reads', fileRecords);
+                    this.linkRelationship(sourceNode, node, "reads", fileRecords);
                 }
                 for (const sourceNodeId of filteredReferences.writes) {
                     const sourceNode = targetNodes.get(sourceNodeId);
                     if (!sourceNode) {
                         continue;
                     }
-                    this.linkRelationship(sourceNode, node, 'writes', fileRecords);
+                    this.linkRelationship(sourceNode, node, "writes", fileRecords);
                 }
             }
             recordsByFile.set(filePath, fileRecords);
@@ -509,7 +791,7 @@ class WorkspaceGraphBuilder {
                 this.appendFileRelationshipRecord(index, node.filePath, {
                     sourceId: node.id,
                     targetId,
-                    edgeType: 'calls',
+                    edgeType: "calls",
                     sourceFilePath: node.filePath,
                 });
             }
@@ -517,7 +799,7 @@ class WorkspaceGraphBuilder {
                 this.appendFileRelationshipRecord(index, node.filePath, {
                     sourceId: node.id,
                     targetId,
-                    edgeType: 'implements',
+                    edgeType: "implements",
                     sourceFilePath: node.filePath,
                 });
             }
@@ -525,7 +807,7 @@ class WorkspaceGraphBuilder {
                 this.appendFileRelationshipRecord(index, node.filePath, {
                     sourceId: node.id,
                     targetId,
-                    edgeType: 'reads',
+                    edgeType: "reads",
                     sourceFilePath: node.filePath,
                 });
             }
@@ -533,7 +815,7 @@ class WorkspaceGraphBuilder {
                 this.appendFileRelationshipRecord(index, node.filePath, {
                     sourceId: node.id,
                     targetId,
-                    edgeType: 'writes',
+                    edgeType: "writes",
                     sourceFilePath: node.filePath,
                 });
             }
@@ -545,19 +827,19 @@ class WorkspaceGraphBuilder {
             return;
         }
         switch (edgeType) {
-            case 'calls':
+            case "calls":
                 this.addUniqueValue(sourceNode.outgoingCalls, targetNode.id);
                 this.addUniqueValue(targetNode.incomingCalls, sourceNode.id);
                 break;
-            case 'implements':
+            case "implements":
                 this.addUniqueValue(sourceNode.implementations, targetNode.id);
                 this.addUniqueValue(targetNode.incomingImplementations, sourceNode.id);
                 break;
-            case 'reads':
+            case "reads":
                 this.addUniqueValue(sourceNode.references.reads, targetNode.id);
                 this.addUniqueValue(targetNode.incomingReferences.reads, sourceNode.id);
                 break;
-            case 'writes':
+            case "writes":
                 this.addUniqueValue(sourceNode.references.writes, targetNode.id);
                 this.addUniqueValue(targetNode.incomingReferences.writes, sourceNode.id);
                 break;
@@ -580,16 +862,16 @@ class WorkspaceGraphBuilder {
     }
     removeIncomingRelationshipsForNode(node) {
         for (const sourceId of [...node.incomingCalls]) {
-            this.removeRelationshipByDetails(sourceId, node.id, 'calls');
+            this.removeRelationshipByDetails(sourceId, node.id, "calls");
         }
         for (const sourceId of [...node.incomingImplementations]) {
-            this.removeRelationshipByDetails(sourceId, node.id, 'implements');
+            this.removeRelationshipByDetails(sourceId, node.id, "implements");
         }
         for (const sourceId of [...node.incomingReferences.reads]) {
-            this.removeRelationshipByDetails(sourceId, node.id, 'reads');
+            this.removeRelationshipByDetails(sourceId, node.id, "reads");
         }
         for (const sourceId of [...node.incomingReferences.writes]) {
-            this.removeRelationshipByDetails(sourceId, node.id, 'writes');
+            this.removeRelationshipByDetails(sourceId, node.id, "writes");
         }
     }
     removeRelationshipByDetails(sourceId, targetId, edgeType) {
@@ -613,19 +895,19 @@ class WorkspaceGraphBuilder {
             return;
         }
         switch (record.edgeType) {
-            case 'calls':
+            case "calls":
                 this.removeValueFromArray(sourceNode.outgoingCalls, record.targetId);
                 this.removeValueFromArray(targetNode.incomingCalls, record.sourceId);
                 break;
-            case 'implements':
+            case "implements":
                 this.removeValueFromArray(sourceNode.implementations, record.targetId);
                 this.removeValueFromArray(targetNode.incomingImplementations, record.sourceId);
                 break;
-            case 'reads':
+            case "reads":
                 this.removeValueFromArray(sourceNode.references.reads, record.targetId);
                 this.removeValueFromArray(targetNode.incomingReferences.reads, record.sourceId);
                 break;
-            case 'writes':
+            case "writes":
                 this.removeValueFromArray(sourceNode.references.writes, record.targetId);
                 this.removeValueFromArray(targetNode.incomingReferences.writes, record.sourceId);
                 break;
@@ -647,9 +929,9 @@ class WorkspaceGraphBuilder {
         this.fileRelationshipIndex.set(record.sourceFilePath, filtered);
     }
     sameRelationshipRecord(left, right) {
-        return left.sourceId === right.sourceId
-            && left.targetId === right.targetId
-            && left.edgeType === right.edgeType;
+        return (left.sourceId === right.sourceId &&
+            left.targetId === right.targetId &&
+            left.edgeType === right.edgeType);
     }
     addUniqueValue(target, value) {
         if (!target.includes(value)) {
@@ -714,34 +996,34 @@ class WorkspaceGraphBuilder {
                 sourceFilePath,
                 targetFilePath,
                 sourceUriString,
-                targetUriString: knownFileUris.get(targetFilePath) ?? '',
+                targetUriString: knownFileUris.get(targetFilePath) ?? "",
                 relationship,
             });
         };
         for (const specifier of this.extractImportSpecifiers(text)) {
             const targetFilePath = this.resolveWorkspaceTargetPath(sourceFilePath, specifier, knownFileLookup);
             if (targetFilePath) {
-                addRelationship(targetFilePath, 'imports');
+                addRelationship(targetFilePath, "imports");
             }
         }
-        if (role === 'test') {
+        if (role === "test") {
             for (const targetFilePath of this.inferTestCoverageTargets(sourceFilePath, knownFileLookup)) {
-                addRelationship(targetFilePath, 'covers');
+                addRelationship(targetFilePath, "covers");
             }
         }
-        if (role === 'documentation') {
+        if (role === "documentation") {
             for (const specifier of this.extractMarkdownLinkTargets(text)) {
                 const targetFilePath = this.resolveWorkspaceTargetPath(sourceFilePath, specifier, knownFileLookup);
                 if (targetFilePath) {
-                    addRelationship(targetFilePath, 'documents');
+                    addRelationship(targetFilePath, "documents");
                 }
             }
         }
-        if (role === 'template') {
+        if (role === "template") {
             for (const specifier of this.extractTemplateLinkTargets(text)) {
                 const targetFilePath = this.resolveWorkspaceTargetPath(sourceFilePath, specifier, knownFileLookup);
                 if (targetFilePath) {
-                    addRelationship(targetFilePath, 'related-to');
+                    addRelationship(targetFilePath, "related-to");
                 }
             }
         }
@@ -800,7 +1082,31 @@ class WorkspaceGraphBuilder {
         }
         const sourceDir = path.posix.dirname(sourceFilePath);
         const candidates = new Set();
-        const extensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.java', '.rs', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.cs', '.php', '.phtml', '.rb', '.kt', '.kts', '.swift'];
+        const extensions = [
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            ".py",
+            ".go",
+            ".java",
+            ".rs",
+            ".c",
+            ".h",
+            ".cpp",
+            ".cc",
+            ".cxx",
+            ".hpp",
+            ".hh",
+            ".hxx",
+            ".cs",
+            ".php",
+            ".phtml",
+            ".rb",
+            ".kt",
+            ".kts",
+            ".swift",
+        ];
         for (const extension of extensions) {
             candidates.add(path.posix.normalize(path.posix.join(sourceDir, `${normalizedSourceBase}${extension}`)));
             candidates.add(path.posix.normalize(path.posix.join(sourceDir, normalizedSourceBase, `index${extension}`)));
@@ -816,12 +1122,14 @@ class WorkspaceGraphBuilder {
     }
     resolveWorkspaceTargetPath(sourceFilePath, specifier, knownFileLookup) {
         const normalizedSpecifier = this.normalizeRelationshipTarget(specifier);
-        if (!normalizedSpecifier || /^(?:[a-z]+:|#|mailto:|data:|https?:)/i.test(normalizedSpecifier)) {
+        if (!normalizedSpecifier ||
+            /^(?:[a-z]+:|#|mailto:|data:|https?:)/i.test(normalizedSpecifier)) {
             return undefined;
         }
         const sourceDir = path.posix.dirname(sourceFilePath);
         const candidates = new Set();
-        if (normalizedSpecifier.startsWith('.') || normalizedSpecifier.startsWith('/')) {
+        if (normalizedSpecifier.startsWith(".") ||
+            normalizedSpecifier.startsWith("/")) {
             candidates.add(path.posix.normalize(path.posix.join(sourceDir, normalizedSpecifier)));
         }
         else {
@@ -843,7 +1151,39 @@ class WorkspaceGraphBuilder {
         return undefined;
     }
     expandRelationshipPathCandidates(basePath) {
-        const extensionCandidates = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.java', '.rs', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.cs', '.php', '.phtml', '.rb', '.kt', '.kts', '.swift', '.md', '.mdx', '.markdown', '.txt', '.rst', '.adoc', '.html', '.htm'];
+        const extensionCandidates = [
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            ".py",
+            ".go",
+            ".java",
+            ".rs",
+            ".c",
+            ".h",
+            ".cpp",
+            ".cc",
+            ".cxx",
+            ".hpp",
+            ".hh",
+            ".hxx",
+            ".cs",
+            ".php",
+            ".phtml",
+            ".rb",
+            ".kt",
+            ".kts",
+            ".swift",
+            ".md",
+            ".mdx",
+            ".markdown",
+            ".txt",
+            ".rst",
+            ".adoc",
+            ".html",
+            ".htm",
+        ];
         const candidates = new Set();
         const normalizedBase = path.posix.normalize(basePath);
         if (path.posix.extname(normalizedBase)) {
@@ -858,15 +1198,20 @@ class WorkspaceGraphBuilder {
         return [...candidates];
     }
     normalizeRelationshipTarget(value) {
-        return value.trim().replace(/[?#].*$/, '').replace(/\\/g, '/');
+        return value
+            .trim()
+            .replace(/[?#].*$/, "")
+            .replace(/\\/g, "/");
     }
     stripTestSuffix(fileName) {
-        const withoutExtension = fileName.replace(/\.[^.]+$/, '');
-        const withoutSuffix = withoutExtension.replace(/(?:\.|-|_)?(?:test|spec)$/i, '');
+        const withoutExtension = fileName.replace(/\.[^.]+$/, "");
+        const withoutSuffix = withoutExtension.replace(/(?:\.|-|_)?(?:test|spec)$/i, "");
         return withoutSuffix.length > 0 ? withoutSuffix : withoutExtension;
     }
     isLikelyLocalSpecifier(specifier) {
-        return specifier.startsWith('.') || specifier.startsWith('/') || specifier.includes('/');
+        return (specifier.startsWith(".") ||
+            specifier.startsWith("/") ||
+            specifier.includes("/"));
     }
     collectKnownFilePaths(filesByRole) {
         const filePaths = new Set();
@@ -920,9 +1265,10 @@ class WorkspaceGraphBuilder {
         if (exactMatch) {
             return exactMatch;
         }
-        const normalizedCandidate = candidate.replace(/\\/g, '/');
+        const normalizedCandidate = candidate.replace(/\\/g, "/");
         for (const [key, filePath] of knownFileLookup) {
-            if (key.endsWith(`/${normalizedCandidate.toLowerCase()}`) || key === normalizedCandidate.toLowerCase()) {
+            if (key.endsWith(`/${normalizedCandidate.toLowerCase()}`) ||
+                key === normalizedCandidate.toLowerCase()) {
                 return filePath;
             }
         }
@@ -946,7 +1292,7 @@ class WorkspaceGraphBuilder {
     async readWorkspaceFileText(uri) {
         try {
             const content = await vscode.workspace.fs.readFile(uri);
-            return Buffer.from(content).toString('utf8');
+            return Buffer.from(content).toString("utf8");
         }
         catch {
             return undefined;
@@ -995,11 +1341,77 @@ class WorkspaceGraphBuilder {
             symbolCache: (0, symbolIndexer_1.serializeIndexedSymbolMap)(this.symbolCache),
             fileModifiedTimes: Object.fromEntries(this.fileModifiedTimes.entries()),
         };
-        const payload = Buffer.from(JSON.stringify(snapshot), 'utf8');
+        const payload = Buffer.from(JSON.stringify(snapshot), "utf8");
         await vscode.workspace.fs.writeFile(this.cacheFileUri, payload);
     }
+    /**
+     * Write the entire current in-memory graph to the SQLite database in a
+     * single transaction.  Called after a full workspace build and (optionally)
+     * after a JSON-to-SQLite migration.
+     *
+     * @deprecated Only call `schedulePersistence()` when `this.db` is undefined.
+     */
+    persistToDatabase() {
+        if (!this.db) {
+            return;
+        }
+        const db = this.db;
+        try {
+            db.transaction(() => {
+                // Write all nodes and their outgoing edges.
+                for (const node of this.cachedGraph.nodes.values()) {
+                    db.upsertNode({
+                        id: node.id,
+                        symbolName: node.symbolName,
+                        symbolKind: node.symbolKind,
+                        nodeType: node.nodeType,
+                        filePath: node.filePath,
+                        uriString: node.uriString,
+                        lineNumber: node.lineNumber,
+                        rangeStartLine: node.rangeStartLine,
+                        rangeStartCharacter: node.rangeStartCharacter,
+                        rangeEndLine: node.rangeEndLine,
+                        rangeEndCharacter: node.rangeEndCharacter,
+                    });
+                    for (const targetId of node.outgoingCalls) {
+                        db.upsertEdge(node.id, targetId, "calls");
+                    }
+                    for (const targetId of node.implementations) {
+                        db.upsertEdge(node.id, targetId, "implements");
+                    }
+                    for (const targetId of node.references.reads) {
+                        db.upsertEdge(node.id, targetId, "reads");
+                    }
+                    for (const targetId of node.references.writes) {
+                        db.upsertEdge(node.id, targetId, "writes");
+                    }
+                }
+                // Write file relationships (full replace).
+                db.replaceAllFileRelationships(this.flattenSupplementaryFileRelationships());
+                // Write symbol cache.
+                for (const [id, sym] of this.symbolCache) {
+                    db.upsertSymbolCache(id, JSON.stringify((0, symbolIndexer_1.serializeIndexedSymbol)(sym)));
+                }
+                // Write file modified times.
+                for (const [fp, mtime] of this.fileModifiedTimes) {
+                    db.setFileModifiedTime(fp, mtime);
+                }
+                // Write metadata.
+                if (this.cachedGraph.builtAt) {
+                    db.setMetadata("builtAtIso", this.cachedGraph.builtAt.toISOString());
+                }
+                if (this.cachedGraph.fileRoleSummary) {
+                    db.setMetadata("fileRoleSummary", JSON.stringify(this.cachedGraph.fileRoleSummary));
+                }
+            });
+            this.logger.info("[VSContext] Graph persisted to SQLite database.");
+        }
+        catch (error) {
+            this.logger.warn(`[VSContext] Failed to persist graph to database: ${error}`);
+        }
+    }
     parseSnapshot(value) {
-        if (!value || typeof value !== 'object') {
+        if (!value || typeof value !== "object") {
             return undefined;
         }
         const candidate = value;
@@ -1009,18 +1421,24 @@ class WorkspaceGraphBuilder {
         if (candidate.knowledgeModelVersion !== knowledgeModel_1.KNOWLEDGE_MODEL_VERSION) {
             return undefined;
         }
-        if (!Array.isArray(candidate.nodes) || !Array.isArray(candidate.symbolCache)) {
+        if (!Array.isArray(candidate.nodes) ||
+            !Array.isArray(candidate.symbolCache)) {
             return undefined;
         }
-        if (!candidate.fileModifiedTimes || typeof candidate.fileModifiedTimes !== 'object') {
+        if (!candidate.fileModifiedTimes ||
+            typeof candidate.fileModifiedTimes !== "object") {
             return undefined;
         }
-        const safeWorkspaceUri = typeof candidate.workspaceFolderUri === 'string' ? candidate.workspaceFolderUri : undefined;
-        const safeSavedAtIso = typeof candidate.savedAtIso === 'string' ? candidate.savedAtIso : '';
+        const safeWorkspaceUri = typeof candidate.workspaceFolderUri === "string"
+            ? candidate.workspaceFolderUri
+            : undefined;
+        const safeSavedAtIso = typeof candidate.savedAtIso === "string" ? candidate.savedAtIso : "";
         if (!safeSavedAtIso) {
             return undefined;
         }
-        const safeBuiltAtIso = typeof candidate.builtAtIso === 'string' ? candidate.builtAtIso : undefined;
+        const safeBuiltAtIso = typeof candidate.builtAtIso === "string"
+            ? candidate.builtAtIso
+            : undefined;
         const fileRoleSummary = this.parseFileRoleSummary(candidate.fileRoleSummary);
         const fileRelationships = Array.isArray(candidate.fileRelationships)
             ? this.deserializeWorkspaceFileRelationships(candidate.fileRelationships)
@@ -1044,15 +1462,15 @@ class WorkspaceGraphBuilder {
         }
         const relationships = [];
         for (const entry of value) {
-            if (!entry || typeof entry !== 'object') {
+            if (!entry || typeof entry !== "object") {
                 continue;
             }
             const candidate = entry;
-            if (typeof candidate.sourceFilePath !== 'string'
-                || typeof candidate.targetFilePath !== 'string'
-                || typeof candidate.sourceUriString !== 'string'
-                || typeof candidate.targetUriString !== 'string'
-                || typeof candidate.relationship !== 'string') {
+            if (typeof candidate.sourceFilePath !== "string" ||
+                typeof candidate.targetFilePath !== "string" ||
+                typeof candidate.sourceUriString !== "string" ||
+                typeof candidate.targetUriString !== "string" ||
+                typeof candidate.relationship !== "string") {
                 continue;
             }
             relationships.push({
@@ -1066,15 +1484,15 @@ class WorkspaceGraphBuilder {
         return relationships;
     }
     parseFileRoleSummary(value) {
-        if (!value || typeof value !== 'object') {
+        if (!value || typeof value !== "object") {
             return undefined;
         }
         const candidate = value;
-        if (typeof candidate.source !== 'number'
-            || typeof candidate.test !== 'number'
-            || typeof candidate.documentation !== 'number'
-            || typeof candidate.template !== 'number'
-            || typeof candidate.other !== 'number') {
+        if (typeof candidate.source !== "number" ||
+            typeof candidate.test !== "number" ||
+            typeof candidate.documentation !== "number" ||
+            typeof candidate.template !== "number" ||
+            typeof candidate.other !== "number") {
             return undefined;
         }
         return {
@@ -1104,29 +1522,29 @@ class WorkspaceGraphBuilder {
         };
     }
     deserializeNode(node) {
-        if (!node || typeof node !== 'object') {
+        if (!node || typeof node !== "object") {
             return undefined;
         }
-        if (typeof node.id !== 'string'
-            || typeof node.symbolName !== 'string'
-            || typeof node.symbolKind !== 'number'
-            || typeof node.filePath !== 'string'
-            || typeof node.uriString !== 'string'
-            || typeof node.lineNumber !== 'number'
-            || typeof node.rangeStartLine !== 'number'
-            || typeof node.rangeStartCharacter !== 'number'
-            || typeof node.rangeEndLine !== 'number'
-            || typeof node.rangeEndCharacter !== 'number'
-            || !Array.isArray(node.outgoingCalls)
-            || !Array.isArray(node.implementations)
-            || !Array.isArray(node.referenceReads)
-            || !Array.isArray(node.referenceWrites)) {
+        if (typeof node.id !== "string" ||
+            typeof node.symbolName !== "string" ||
+            typeof node.symbolKind !== "number" ||
+            typeof node.filePath !== "string" ||
+            typeof node.uriString !== "string" ||
+            typeof node.lineNumber !== "number" ||
+            typeof node.rangeStartLine !== "number" ||
+            typeof node.rangeStartCharacter !== "number" ||
+            typeof node.rangeEndLine !== "number" ||
+            typeof node.rangeEndCharacter !== "number" ||
+            !Array.isArray(node.outgoingCalls) ||
+            !Array.isArray(node.implementations) ||
+            !Array.isArray(node.referenceReads) ||
+            !Array.isArray(node.referenceWrites)) {
             return undefined;
         }
-        const outgoingCalls = node.outgoingCalls.filter((entry) => typeof entry === 'string');
-        const implementations = node.implementations.filter((entry) => typeof entry === 'string');
-        const referenceReads = node.referenceReads.filter((entry) => typeof entry === 'string');
-        const referenceWrites = node.referenceWrites.filter((entry) => typeof entry === 'string');
+        const outgoingCalls = node.outgoingCalls.filter((entry) => typeof entry === "string");
+        const implementations = node.implementations.filter((entry) => typeof entry === "string");
+        const referenceReads = node.referenceReads.filter((entry) => typeof entry === "string");
+        const referenceWrites = node.referenceWrites.filter((entry) => typeof entry === "string");
         return {
             id: node.id,
             symbolName: node.symbolName,
@@ -1153,7 +1571,9 @@ class WorkspaceGraphBuilder {
     deserializeFileModifiedTimes(value) {
         const map = new Map();
         for (const [filePath, modifiedAt] of Object.entries(value)) {
-            if (typeof filePath !== 'string' || typeof modifiedAt !== 'number' || !Number.isFinite(modifiedAt)) {
+            if (typeof filePath !== "string" ||
+                typeof modifiedAt !== "number" ||
+                !Number.isFinite(modifiedAt)) {
                 continue;
             }
             map.set(filePath, modifiedAt);
@@ -1185,7 +1605,7 @@ class WorkspaceGraphBuilder {
         const next = new Map();
         let processed = 0;
         for (const uri of uris) {
-            if (uri.scheme !== 'file') {
+            if (uri.scheme !== "file") {
                 continue;
             }
             const modifiedAt = await this.getFileModifiedTime(uri);
@@ -1222,34 +1642,37 @@ class WorkspaceGraphBuilder {
     }
     resolveNodeType(kind) {
         if (kind === vscode.SymbolKind.Class) {
-            return 'class';
+            return "class";
         }
-        if (kind === vscode.SymbolKind.Interface
-            || kind === vscode.SymbolKind.Enum
-            || kind === vscode.SymbolKind.Namespace
-            || kind === vscode.SymbolKind.Module
-            || kind === vscode.SymbolKind.TypeParameter) {
-            return 'class';
+        if (kind === vscode.SymbolKind.Interface ||
+            kind === vscode.SymbolKind.Enum ||
+            kind === vscode.SymbolKind.Namespace ||
+            kind === vscode.SymbolKind.Module ||
+            kind === vscode.SymbolKind.TypeParameter) {
+            return "class";
         }
-        if (kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor) {
-            return 'method';
+        if (kind === vscode.SymbolKind.Method ||
+            kind === vscode.SymbolKind.Constructor) {
+            return "method";
         }
-        if (kind === vscode.SymbolKind.Variable
-            || kind === vscode.SymbolKind.Constant
-            || kind === vscode.SymbolKind.Field
-            || kind === vscode.SymbolKind.Property) {
-            return 'variable';
+        if (kind === vscode.SymbolKind.Variable ||
+            kind === vscode.SymbolKind.Constant ||
+            kind === vscode.SymbolKind.Field ||
+            kind === vscode.SymbolKind.Property) {
+            return "variable";
         }
-        return 'function';
+        return "function";
     }
     isCallableSymbol(kind) {
-        return kind === vscode.SymbolKind.Function || kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor;
+        return (kind === vscode.SymbolKind.Function ||
+            kind === vscode.SymbolKind.Method ||
+            kind === vscode.SymbolKind.Constructor);
     }
     isVariableLikeSymbol(kind) {
-        return (kind === vscode.SymbolKind.Variable
-            || kind === vscode.SymbolKind.Constant
-            || kind === vscode.SymbolKind.Field
-            || kind === vscode.SymbolKind.Property);
+        return (kind === vscode.SymbolKind.Variable ||
+            kind === vscode.SymbolKind.Constant ||
+            kind === vscode.SymbolKind.Field ||
+            kind === vscode.SymbolKind.Property);
     }
     filterReferenceBuckets(references, targetNodes, symbolId) {
         return {
@@ -1264,10 +1687,10 @@ class WorkspaceGraphBuilder {
         };
     }
     relationshipCountForNode(node) {
-        return node.outgoingCalls.length
-            + node.implementations.length
-            + node.references.reads.length
-            + node.references.writes.length;
+        return (node.outgoingCalls.length +
+            node.implementations.length +
+            node.references.reads.length +
+            node.references.writes.length);
     }
     logGraphNodeCreation(symbol) {
         if (!this.isSymbolDebugEnabled()) {
@@ -1277,7 +1700,9 @@ class WorkspaceGraphBuilder {
         this.logger.info(`[VSContext][debug] Creating graph node: ${symbol.symbolName} (${kindLabel})`);
     }
     isSymbolDebugEnabled() {
-        return vscode.workspace.getConfiguration('vscontext').get('debugSymbolDetection', false);
+        return vscode.workspace
+            .getConfiguration("vscontext")
+            .get("debugSymbolDetection", false);
     }
     async yieldToEventLoop() {
         await new Promise((resolve) => {

@@ -20,7 +20,7 @@ export async function resolveSelectedSymbol(
   options?: ResolveSymbolOptions,
 ): Promise<GraphNode | undefined> {
   if (explicitNodeId) {
-    return graph.nodes.get(explicitNodeId);
+    return getGraphNode(graph, explicitNodeId);
   }
 
   const editor = vscode.window.activeTextEditor;
@@ -50,8 +50,8 @@ export async function resolveSelectedSymbol(
   const filePath = toWorkspaceRelativePath(editor.document.uri);
   const fileNodeIds = graph.fileIndex.get(filePath) ?? [];
   const fileNodes = fileNodeIds
-    .map((nodeId) => graph.nodes.get(nodeId))
-    .filter((node): node is GraphNode => node !== undefined);
+    .map((nodeId) => getGraphNode(graph, nodeId))
+    .filter(isGraphNode);
 
   const lineNumber = editor.selection.active.line + 1;
   const cursorMatch = fileNodes
@@ -144,6 +144,15 @@ async function promptForSymbolSelection(
   }
 
   return nodes.find((node) => node.id === picked.nodeId);
+}
+
+function getGraphNode(graph: WorkspaceGraph, nodeId: string): GraphNode | undefined {
+  const node = graph.nodes.get(nodeId);
+  return isGraphNode(node) ? node : undefined;
+}
+
+function isGraphNode(node: GraphNode | undefined): node is GraphNode {
+  return node !== undefined;
 }
 
 function toSymbolKindLabel(kind: vscode.SymbolKind): string {

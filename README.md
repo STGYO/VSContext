@@ -148,6 +148,12 @@ VSContext contributes `@vscontext` with commands:
 - `/summary`
 - `/trace`
 - `/impact`
+- `/root-cause`
+- `/blast-radius`
+- `/similar-code`
+- `/test-coverage`
+- `/repo`
+- `/issue`
 - `/help`
 
 Focus resolution order for `/trace` and `/impact`:
@@ -158,6 +164,7 @@ Focus resolution order for `/trace` and `/impact`:
 4. inferred symbol from prompt text
 
 If no model is selected, VSContext returns the prepared graph summary directly.
+Repository-level queries (`/repo`) and issue workflows (`/issue`) work without a focus symbol.
 
 ## Supported Files And Scan Scope
 
@@ -254,12 +261,27 @@ src/
     contextFilters.ts
     contextSummary.ts
     focusResolver.ts
+    queryOrchestrator.ts
+  commands/
+  export/
+    queryResultExporter.ts
   graph/
     graphBuilder.ts
+    graphDatabase.ts
+    incrementalRelationshipTracker.ts
+    knowledgeModel.ts
+    relationshipResolver.ts
     symbolIndexer.ts
     symbolPreScanWorker.ts
+  indexing/
+    indexTelemetry.ts
+  semantic/
+    semanticIndexer.ts
   tree/
     contextTreeProvider.ts
+  ui/
+    savedSearchesTreeProvider.ts
+    savedSearchManager.ts
   views/
     codeGraphView.ts
     graphWebviewProvider.ts
@@ -275,6 +297,7 @@ webview/
   graph.html
   graph.css
   graph.js
+  sigmaRenderer.js
 ```
 
 ## Development
@@ -297,18 +320,31 @@ webview/
 2. Build extension: `npm run compile`
 3. Package: `vsce package`
 
+## Benchmarking
+
+See [benchmarks/README.md](benchmarks/README.md) for the workspace-size benchmark matrix and capture checklist.
+
 ## Troubleshooting
+
+If you need a deeper recovery checklist, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 - Graph is sparse:
   - Increase `vscontext.maxIndexedFiles`.
-  - Confirm workspace has supported file types.
+  - Confirm the workspace has supported file types.
+- Workspace exceeds the indexing limit:
+  - Increase `vscontext.maxIndexedFiles` or narrow the workspace.
+  - Check the VSContext output channel for the skipped-file count.
 - Indexing is slow:
   - Tune `vscontext.workerCount` and `vscontext.workerBatchSize`.
+  - Disable `vscontext.debugSymbolDetection` unless you are actively diagnosing symbol extraction.
 - Expected symbols are missing:
   - Enable `vscontext.debugSymbolDetection`.
-  - Check VSContext output channel diagnostics.
+  - Save the file, then refresh the index or reopen the workspace.
 - Graph is too dense:
   - Use edge filters, variable/structural toggles, search, and edge budget.
+- Chat replies fall back to the query packet:
+  - Open the VSContext output channel and retry the request.
+  - Check whether the selected model is available and whether the workspace graph finished indexing.
 
 ## License
 

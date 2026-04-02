@@ -1,8 +1,22 @@
 import * as vscode from 'vscode';
 import { type SavedSearch, type SavedView, SavedSearchManager } from './savedSearchManager';
 import { type Logger } from '../utils/logger';
+import { type HybridQueryResult } from '../chat/queryOrchestrator';
 
 type TreeNode = SavedSearchesCategory | SavedViewsCategory | SavedSearchTreeItem | SavedViewTreeItem;
+
+function isHybridQueryResult(value: unknown): value is HybridQueryResult {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Partial<HybridQueryResult>;
+  return (
+    typeof candidate.templateId === 'string' &&
+    typeof candidate.prompt === 'string' &&
+    typeof candidate.confidence === 'string'
+  );
+}
 
 export class SavedSearchesTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private _onDidChangeTreeData: vscode.EventEmitter<TreeNode | undefined> = new vscode.EventEmitter<TreeNode | undefined>();
@@ -194,11 +208,17 @@ export class SavedSearchCommandsManager {
 
     // Save current view
     this.context.subscriptions.push(
-      vscode.commands.registerCommand('vscontext.saveCurrentView', async (result: any) => {
+      vscode.commands.registerCommand('vscontext.saveCurrentView', async (result: unknown) => {
         const name = await vscode.window.showInputBox({
           prompt: 'Enter name for this view',
           placeHolder: `View at ${new Date().toLocaleTimeString()}`,
         });
+
+        if (!isHybridQueryResult(result)) {
+          this.logger.warn('[VSContext] saveCurrentView received an invalid query result payload.');
+          vscode.window.showWarningMessage('Unable to save this view because the result payload was invalid.');
+          return;
+        }
 
         if (name) {
           this.manager.saveView(result, name);

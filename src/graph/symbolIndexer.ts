@@ -1,16 +1,17 @@
-import * as path from 'path';
-import { existsSync } from 'fs';
-import { Worker } from 'worker_threads';
-import * as vscode from 'vscode';
+import * as path from "path";
+import { existsSync } from "fs";
+import { Worker } from "worker_threads";
+import * as vscode from "vscode";
 
-import { Logger } from '../utils/logger';
-import type { WorkspaceFileRole } from '../utils/fileRoleClassifier';
+import { Logger } from "../utils/logger";
+import type { WorkspaceFileRole } from "../utils/fileRoleClassifier";
 import {
   findWorkspaceSourceFiles,
   findWorkspaceRepositoryFiles,
   getWorkspaceScanSettings,
   toWorkspaceRelativePath,
-} from '../utils/workspaceScanner';
+} from "../utils/workspaceScanner";
+import { RelationshipResolver } from "./relationshipResolver";
 
 const SUPPORTED_SYMBOL_KINDS = new Set<vscode.SymbolKind>([
   vscode.SymbolKind.Function,
@@ -29,36 +30,56 @@ const SUPPORTED_SYMBOL_KINDS = new Set<vscode.SymbolKind>([
 ]);
 
 const PRE_SCAN_AST_EXTENSIONS = new Set<string>([
-  '.ts',
-  '.tsx',
-  '.js',
-  '.jsx',
-  '.py',
-  '.rs',
-  '.go',
-  '.java',
-  '.c',
-  '.h',
-  '.cpp',
-  '.cc',
-  '.cxx',
-  '.hpp',
-  '.hh',
-  '.hxx',
-  '.cs',
-  '.php',
-  '.phtml',
-  '.rb',
-  '.kt',
-  '.kts',
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".py",
+  ".rs",
+  ".go",
+  ".java",
+  ".c",
+  ".h",
+  ".cpp",
+  ".cc",
+  ".cxx",
+  ".hpp",
+  ".hh",
+  ".hxx",
+  ".cs",
+  ".php",
+  ".phtml",
+  ".rb",
+  ".kt",
+  ".kts",
 ]);
 
-type WorkerSymbolKind = 'function' | 'method' | 'class' | 'interface' | 'enum' | 'namespace' | 'module' | 'typeAlias' | 'variable' | 'constant' | 'field' | 'property';
+const WORKER_BATCH_TIMEOUT_MS = 15_000;
+
+type WorkerSymbolKind =
+  | "function"
+  | "method"
+  | "class"
+  | "interface"
+  | "enum"
+  | "namespace"
+  | "module"
+  | "typeAlias"
+  | "variable"
+  | "constant"
+  | "field"
+  | "property";
 
 interface WorkerExtractedSymbol {
   readonly name: string;
   readonly line: number;
   readonly kind: WorkerSymbolKind;
+  // Data-flow hints populated by the worker pre-scan (all optional)
+  readonly isAsync?: boolean;
+  readonly hasBody?: boolean;
+  readonly parameterCount?: number;
+  readonly variablesModified?: string[];
+  readonly variablesRead?: string[];
 }
 
 interface WorkerBatchResult {
@@ -105,7 +126,9 @@ export interface SerializedIndexedSymbol {
   readonly range: SerializedIndexedSymbolRange;
 }
 
-export function serializeIndexedSymbol(symbol: IndexedSymbol): SerializedIndexedSymbol {
+export function serializeIndexedSymbol(
+  symbol: IndexedSymbol,
+): SerializedIndexedSymbol {
   return {
     id: symbol.id,
     symbolName: symbol.symbolName,
@@ -122,59 +145,69 @@ export function serializeIndexedSymbol(symbol: IndexedSymbol): SerializedIndexed
   };
 }
 
-export function deserializeIndexedSymbol(snapshot: SerializedIndexedSymbol): IndexedSymbol | undefined {
-  if (!snapshot || typeof snapshot !== 'object') {
+export function deserializeIndexedSymbol(
+  snapshot: SerializedIndexedSymbol,
+): IndexedSymbol | undefined {
+  if (!snapshot || typeof snapshot !== "object") {
     return undefined;
   }
 
-  if (typeof snapshot.id !== 'string' || snapshot.id.length === 0) {
+  if (typeof snapshot.id !== "string" || snapshot.id.length === 0) {
     return undefined;
   }
-
-  if (typeof snapshot.symbolName !== 'string' || snapshot.symbolName.length === 0) {
-    return undefined;
-  }
-
-  if (typeof snapshot.filePath !== 'string' || snapshot.filePath.length === 0) {
-    return undefined;
-  }
-
-  if (typeof snapshot.uriString !== 'string' || snapshot.uriString.length === 0) {
-    return undefined;
-  }
-
-  if (typeof snapshot.symbolKind !== 'number' || !Number.isFinite(snapshot.symbolKind)) {
-    return undefined;
-  }
-
-  if (typeof snapshot.lineNumber !== 'number' || !Number.isFinite(snapshot.lineNumber) || snapshot.lineNumber < 1) {
-    return undefined;
-  }
-
-  if (!snapshot.range || typeof snapshot.range !== 'object') {
-    return undefined;
-  }
-
-  const {
-    startLine,
-    startCharacter,
-    endLine,
-    endCharacter,
-  } = snapshot.range;
 
   if (
-    typeof startLine !== 'number'
-    || typeof startCharacter !== 'number'
-    || typeof endLine !== 'number'
-    || typeof endCharacter !== 'number'
-    || !Number.isFinite(startLine)
-    || !Number.isFinite(startCharacter)
-    || !Number.isFinite(endLine)
-    || !Number.isFinite(endCharacter)
-    || startLine < 0
-    || startCharacter < 0
-    || endLine < 0
-    || endCharacter < 0
+    typeof snapshot.symbolName !== "string" ||
+    snapshot.symbolName.length === 0
+  ) {
+    return undefined;
+  }
+
+  if (typeof snapshot.filePath !== "string" || snapshot.filePath.length === 0) {
+    return undefined;
+  }
+
+  if (
+    typeof snapshot.uriString !== "string" ||
+    snapshot.uriString.length === 0
+  ) {
+    return undefined;
+  }
+
+  if (
+    typeof snapshot.symbolKind !== "number" ||
+    !Number.isFinite(snapshot.symbolKind)
+  ) {
+    return undefined;
+  }
+
+  if (
+    typeof snapshot.lineNumber !== "number" ||
+    !Number.isFinite(snapshot.lineNumber) ||
+    snapshot.lineNumber < 1
+  ) {
+    return undefined;
+  }
+
+  if (!snapshot.range || typeof snapshot.range !== "object") {
+    return undefined;
+  }
+
+  const { startLine, startCharacter, endLine, endCharacter } = snapshot.range;
+
+  if (
+    typeof startLine !== "number" ||
+    typeof startCharacter !== "number" ||
+    typeof endLine !== "number" ||
+    typeof endCharacter !== "number" ||
+    !Number.isFinite(startLine) ||
+    !Number.isFinite(startCharacter) ||
+    !Number.isFinite(endLine) ||
+    !Number.isFinite(endCharacter) ||
+    startLine < 0 ||
+    startCharacter < 0 ||
+    endLine < 0 ||
+    endCharacter < 0
   ) {
     return undefined;
   }
@@ -186,7 +219,12 @@ export function deserializeIndexedSymbol(snapshot: SerializedIndexedSymbol): Ind
     return undefined;
   }
 
-  const range = new vscode.Range(startLine, startCharacter, endLine, endCharacter);
+  const range = new vscode.Range(
+    startLine,
+    startCharacter,
+    endLine,
+    endCharacter,
+  );
   const normalizedId = createSymbolNodeId(uri, snapshot.symbolName, startLine);
 
   if (snapshot.id !== normalizedId) {
@@ -204,11 +242,15 @@ export function deserializeIndexedSymbol(snapshot: SerializedIndexedSymbol): Ind
   };
 }
 
-export function serializeIndexedSymbolMap(symbols: Map<string, IndexedSymbol>): SerializedIndexedSymbol[] {
+export function serializeIndexedSymbolMap(
+  symbols: Map<string, IndexedSymbol>,
+): SerializedIndexedSymbol[] {
   return [...symbols.values()].map((symbol) => serializeIndexedSymbol(symbol));
 }
 
-export function deserializeIndexedSymbolMap(snapshots: SerializedIndexedSymbol[]): Map<string, IndexedSymbol> {
+export function deserializeIndexedSymbolMap(
+  snapshots: SerializedIndexedSymbol[],
+): Map<string, IndexedSymbol> {
   const restored = new Map<string, IndexedSymbol>();
 
   for (const snapshot of snapshots) {
@@ -240,27 +282,56 @@ export interface WorkspaceIndexResult {
   };
 }
 
-export function createSymbolNodeId(uri: vscode.Uri, symbolName: string, startLineZeroBased: number): string {
+export function createSymbolNodeId(
+  uri: vscode.Uri,
+  symbolName: string,
+  startLineZeroBased: number,
+): string {
   return `${uri.toString()}::${symbolName}::${startLineZeroBased + 1}`;
 }
 
 export class SymbolIndexer {
+  /**
+   * Optional RelationshipResolver integration.  When set via
+   * `setRelationshipResolver`, resolution attempts made by this indexer are
+   * also recorded in the resolver's stats, enabling a single centralised view
+   * of LSP resolution health across the extension.
+   */
+  private resolver: RelationshipResolver | undefined;
+
   public constructor(private readonly logger: Logger) {}
+
+  /**
+   * Attach a RelationshipResolver that will collect stats from resolutions
+   * performed by this indexer.  Does not transfer ownership; the caller is
+   * responsible for the resolver's lifecycle.
+   */
+  public setRelationshipResolver(resolver: RelationshipResolver): void {
+    this.resolver = resolver;
+  }
 
   public async indexWorkspaceSymbols(): Promise<WorkspaceIndexResult> {
     const settings = getWorkspaceScanSettings();
     const indexed = new Map<string, IndexedSymbol>();
 
     try {
-      const repositoryScan = await findWorkspaceRepositoryFiles(settings.maxIndexedFiles);
+      const repositoryScan = await findWorkspaceRepositoryFiles(
+        settings.maxIndexedFiles,
+      );
       const scanResult = repositoryScan;
-      this.logger.info(`[VSContext] Indexed ${scanResult.files.length} files selected for symbol extraction.`);
-      this.logger.info(`[VSContext] Skipped dependency directories: ${scanResult.skippedByExclusions} files.`);
+      this.logger.info(
+        `[VSContext] Indexed ${scanResult.files.length} files selected for symbol extraction.`,
+      );
+      this.logger.info(
+        `[VSContext] Skipped dependency directories: ${scanResult.skippedByExclusions} files.`,
+      );
       this.logger.info(
         `[VSContext] Repository roles: source=${repositoryScan.roleCounts.source}, test=${repositoryScan.roleCounts.test}, documentation=${repositoryScan.roleCounts.documentation}, template=${repositoryScan.roleCounts.template}, other=${repositoryScan.roleCounts.other}.`,
       );
       if (scanResult.skippedByLimit > 0) {
-        this.logger.warn(`[VSContext] Skipped ${scanResult.skippedByLimit} files due to maxIndexedFiles limit.`);
+        this.logger.warn(
+          `[VSContext] Skipped ${scanResult.skippedByLimit} files due to maxIndexedFiles limit.`,
+        );
       }
 
       const preScanResult = await this.runParallelPreScan(
@@ -268,16 +339,22 @@ export class SymbolIndexer {
         settings.workerCount,
         settings.workerBatchSize,
       );
-      this.logger.info(`[VSContext] Worker pre-scan found symbol candidates in ${preScanResult.candidateFilePaths.length} files.`);
+      this.logger.info(
+        `[VSContext] Worker pre-scan found symbol candidates in ${preScanResult.candidateFilePaths.length} files.`,
+      );
 
-      await this.forEachWithConcurrency(scanResult.files, settings.workerCount, async (uri) => {
-        const fallbackSymbols = preScanResult.symbolMap[uri.fsPath] ?? [];
-        const symbols = await this.indexDocumentSymbols(uri, fallbackSymbols);
+      await this.forEachWithConcurrency(
+        scanResult.files,
+        settings.workerCount,
+        async (uri) => {
+          const fallbackSymbols = preScanResult.symbolMap[uri.fsPath] ?? [];
+          const symbols = await this.indexDocumentSymbols(uri, fallbackSymbols);
 
-        for (const symbol of symbols) {
-          indexed.set(symbol.id, symbol);
-        }
-      });
+          for (const symbol of symbols) {
+            indexed.set(symbol.id, symbol);
+          }
+        },
+      );
 
       this.logger.info(`[VSContext] Indexed ${indexed.size} symbols.`);
       return {
@@ -291,7 +368,7 @@ export class SymbolIndexer {
         fileRoleSummary: repositoryScan.roleCounts,
       };
     } catch (error) {
-      this.logger.error('Workspace symbol indexing failed.', error);
+      this.logger.error("Workspace symbol indexing failed.", error);
       return {
         indexed,
         scannedFiles: [],
@@ -317,7 +394,10 @@ export class SymbolIndexer {
     }
   }
 
-  public async indexDocumentSymbols(uri: vscode.Uri, fallbackSymbols: WorkerExtractedSymbol[] = []): Promise<IndexedSymbol[]> {
+  public async indexDocumentSymbols(
+    uri: vscode.Uri,
+    fallbackSymbols: WorkerExtractedSymbol[] = [],
+  ): Promise<IndexedSymbol[]> {
     if (!this.shouldIndexUri(uri)) {
       return [];
     }
@@ -329,7 +409,12 @@ export class SymbolIndexer {
       .map((symbol) => this.toIndexedSymbol(symbol));
 
     const fromFallback = fallbackSymbols
-      .filter((symbol) => this.hasMeaningfulName(symbol.name, this.toSymbolKindFromFallback(symbol.kind)))
+      .filter((symbol) =>
+        this.hasMeaningfulName(
+          symbol.name,
+          this.toSymbolKindFromFallback(symbol.kind),
+        ),
+      )
       .map((symbol) => this.toIndexedSymbolFromFallback(uri, symbol));
 
     const merged = new Map<string, IndexedSymbol>();
@@ -360,17 +445,14 @@ export class SymbolIndexer {
     const outgoingIds = new Set<string>();
 
     try {
-      const roots = await vscode.commands.executeCommand<vscode.CallHierarchyItem[]>(
-        'vscode.prepareCallHierarchy',
-        symbol.uri,
-        symbol.range.start,
-      );
+      const roots = await vscode.commands.executeCommand<
+        vscode.CallHierarchyItem[]
+      >("vscode.prepareCallHierarchy", symbol.uri, symbol.range.start);
 
       for (const root of roots ?? []) {
-        const outgoingCalls = await vscode.commands.executeCommand<vscode.CallHierarchyOutgoingCall[]>(
-          'vscode.provideOutgoingCalls',
-          root,
-        );
+        const outgoingCalls = await vscode.commands.executeCommand<
+          vscode.CallHierarchyOutgoingCall[]
+        >("vscode.provideOutgoingCalls", root);
 
         for (const outgoingCall of outgoingCalls ?? []) {
           const nodeId = this.findMatchingSymbolId(outgoingCall.to, allSymbols);
@@ -379,7 +461,16 @@ export class SymbolIndexer {
           }
         }
       }
+
+      // Record stats in the attached resolver (if any) so that a single
+      // RelationshipResolver can aggregate telemetry from all call sites.
+      this.resolver?.recordExternalResolution(
+        "calls",
+        "lsp",
+        outgoingIds.size > 0,
+      );
     } catch {
+      this.resolver?.recordExternalResolution("calls", "lsp", false);
       return [];
     }
 
@@ -397,11 +488,9 @@ export class SymbolIndexer {
     const implementationIds = new Set<string>();
 
     try {
-      const implementations = await vscode.commands.executeCommand<Array<vscode.Location | vscode.LocationLink>>(
-        'vscode.executeImplementationProvider',
-        symbol.uri,
-        symbol.range.start,
-      );
+      const implementations = await vscode.commands.executeCommand<
+        Array<vscode.Location | vscode.LocationLink>
+      >("vscode.executeImplementationProvider", symbol.uri, symbol.range.start);
 
       for (const entry of implementations ?? []) {
         const location = this.toLocation(entry);
@@ -409,7 +498,10 @@ export class SymbolIndexer {
           continue;
         }
 
-        const nodeId = this.findMatchingSymbolIdFromLocation(location, allSymbols);
+        const nodeId = this.findMatchingSymbolIdFromLocation(
+          location,
+          allSymbols,
+        );
         if (nodeId && nodeId !== symbol.id) {
           implementationIds.add(nodeId);
         }
@@ -434,11 +526,9 @@ export class SymbolIndexer {
     const documentCache = new Map<string, vscode.TextDocument>();
 
     try {
-      const references = await vscode.commands.executeCommand<Array<vscode.Location | vscode.LocationLink>>(
-        'vscode.executeReferenceProvider',
-        symbol.uri,
-        symbol.range.start,
-      );
+      const references = await vscode.commands.executeCommand<
+        Array<vscode.Location | vscode.LocationLink>
+      >("vscode.executeReferenceProvider", symbol.uri, symbol.range.start);
 
       for (const entry of references ?? []) {
         const location = this.toLocation(entry);
@@ -446,13 +536,21 @@ export class SymbolIndexer {
           continue;
         }
 
-        const sourceSymbolId = this.findContainingSymbolId(location, allSymbols, symbol.id);
+        const sourceSymbolId = this.findContainingSymbolId(
+          location,
+          allSymbols,
+          symbol.id,
+        );
         if (!sourceSymbolId || sourceSymbolId === symbol.id) {
           continue;
         }
 
-        const accessType = await this.classifyReferenceAccess(symbol.symbolName, location, documentCache);
-        if (accessType === 'writes') {
+        const accessType = await this.classifyReferenceAccess(
+          symbol.symbolName,
+          location,
+          documentCache,
+        );
+        if (accessType === "writes") {
           writes.add(sourceSymbolId);
         } else {
           reads.add(sourceSymbolId);
@@ -473,10 +571,15 @@ export class SymbolIndexer {
     workerCount: number,
     workerBatchSize: number,
   ): Promise<WorkerBatchResult> {
-    const preScannableUris = files.filter((uri) => PRE_SCAN_AST_EXTENSIONS.has(path.extname(uri.fsPath).toLowerCase()));
+    const preScannableUris = files.filter((uri) =>
+      PRE_SCAN_AST_EXTENSIONS.has(path.extname(uri.fsPath).toLowerCase()),
+    );
     const filePaths = preScannableUris.map((uri) => uri.fsPath);
-    const workerScriptPath = path.join(__dirname, 'symbolPreScanWorker.js');
-    const emptyResult: WorkerBatchResult = { candidateFilePaths: [], symbolMap: {} };
+    const workerScriptPath = path.join(__dirname, "symbolPreScanWorker.js");
+    const emptyResult: WorkerBatchResult = {
+      candidateFilePaths: [],
+      symbolMap: {},
+    };
 
     if (!existsSync(workerScriptPath) || filePaths.length === 0) {
       return {
@@ -491,7 +594,10 @@ export class SymbolIndexer {
     }
 
     const maxWorkers = Math.max(1, Math.min(workerCount, batches.length));
-    const aggregate: WorkerBatchResult = { candidateFilePaths: [], symbolMap: {} };
+    const aggregate: WorkerBatchResult = {
+      candidateFilePaths: [],
+      symbolMap: {},
+    };
     let batchIndex = 0;
 
     const runWorkerLoop = async (): Promise<void> => {
@@ -499,7 +605,10 @@ export class SymbolIndexer {
         const currentBatch = batches[batchIndex];
         batchIndex += 1;
 
-        const result = await this.runWorkerBatch(workerScriptPath, currentBatch);
+        const result = await this.runWorkerBatch(
+          workerScriptPath,
+          currentBatch,
+        );
         for (const filePath of result.candidateFilePaths) {
           aggregate.candidateFilePaths.push(filePath);
         }
@@ -513,14 +622,19 @@ export class SymbolIndexer {
     };
 
     try {
-      await Promise.all(Array.from({ length: maxWorkers }, () => runWorkerLoop()));
+      await Promise.all(
+        Array.from({ length: maxWorkers }, () => runWorkerLoop()),
+      );
       return aggregate;
     } catch {
       return emptyResult;
     }
   }
 
-  private async runWorkerBatch(workerScriptPath: string, filePaths: string[]): Promise<WorkerBatchResult> {
+  private async runWorkerBatch(
+    workerScriptPath: string,
+    filePaths: string[],
+  ): Promise<WorkerBatchResult> {
     return new Promise<WorkerBatchResult>((resolve) => {
       const worker = new Worker(workerScriptPath, {
         workerData: {
@@ -533,41 +647,98 @@ export class SymbolIndexer {
         symbolMap: {},
       };
 
-      worker.once('message', (message: WorkerBatchResult) => {
-        worker.terminate().catch(() => undefined);
-        resolve(message);
-      });
+      let settled = false;
+      let timeoutHandle: NodeJS.Timeout | undefined;
 
-      worker.once('error', () => {
-        worker.terminate().catch(() => undefined);
-        resolve(fallback);
-      });
-
-      worker.once('exit', (code) => {
-        if (code !== 0) {
-          resolve(fallback);
+      const finish = (result: WorkerBatchResult): void => {
+        if (settled) {
+          return;
         }
+
+        settled = true;
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = undefined;
+        }
+
+        resolve(result);
+      };
+
+      timeoutHandle = setTimeout(() => {
+        this.logger.warn(
+          `[VSContext] Worker pre-scan timed out after ${WORKER_BATCH_TIMEOUT_MS.toString()}ms for ${filePaths.length.toString()} files. Falling back to direct indexing.`,
+        );
+        worker.terminate().catch(() => undefined);
+        finish(fallback);
+      }, WORKER_BATCH_TIMEOUT_MS);
+
+      worker.once("message", (message: WorkerBatchResult) => {
+        worker.terminate().catch(() => undefined);
+        finish(message);
+      });
+
+      worker.once("messageerror", () => {
+        if (settled) {
+          return;
+        }
+
+        worker.terminate().catch(() => undefined);
+        finish(fallback);
+      });
+
+      worker.once("error", (error) => {
+        if (settled) {
+          return;
+        }
+
+        this.logger.warn(
+          `[VSContext] Worker pre-scan failed: ${String(error)}. Falling back to direct indexing.`,
+        );
+        worker.terminate().catch(() => undefined);
+        finish(fallback);
+      });
+
+      worker.once("exit", (code) => {
+        if (settled) {
+          return;
+        }
+
+        if (code !== 0) {
+          this.logger.warn(
+            `[VSContext] Worker pre-scan exited with code ${code.toString()}. Falling back to direct indexing.`,
+          );
+          finish(fallback);
+          return;
+        }
+
+        finish(fallback);
       });
     });
   }
 
-  private async resolveDocumentSymbols(uri: vscode.Uri): Promise<ResolvedDocumentSymbol[]> {
+  private async resolveDocumentSymbols(
+    uri: vscode.Uri,
+  ): Promise<ResolvedDocumentSymbol[]> {
     try {
-      const resolved = await vscode.commands.executeCommand<Array<vscode.DocumentSymbol | vscode.SymbolInformation>>(
-        'vscode.executeDocumentSymbolProvider',
-        uri,
-      );
+      const resolved = await vscode.commands.executeCommand<
+        Array<vscode.DocumentSymbol | vscode.SymbolInformation>
+      >("vscode.executeDocumentSymbolProvider", uri);
 
       if (!resolved || resolved.length === 0) {
         if (this.isSymbolDebugEnabled()) {
-          this.logger.info(`[VSContext][debug] Raw symbols: none (${toWorkspaceRelativePath(uri)})`);
+          this.logger.info(
+            `[VSContext][debug] Raw symbols: none (${toWorkspaceRelativePath(uri)})`,
+          );
         }
 
         return [];
       }
 
       if (resolved[0] instanceof vscode.DocumentSymbol) {
-        const flattened = this.flattenDocumentSymbols(uri, resolved as vscode.DocumentSymbol[]);
+        const flattened = this.flattenDocumentSymbols(
+          uri,
+          resolved as vscode.DocumentSymbol[],
+        );
         this.logRawResolvedSymbols(uri, flattened);
         return flattened;
       }
@@ -600,7 +771,10 @@ export class SymbolIndexer {
     };
   }
 
-  private toIndexedSymbolFromFallback(uri: vscode.Uri, symbol: WorkerExtractedSymbol): IndexedSymbol {
+  private toIndexedSymbolFromFallback(
+    uri: vscode.Uri,
+    symbol: WorkerExtractedSymbol,
+  ): IndexedSymbol {
     const kind = this.toSymbolKindFromFallback(symbol.kind);
     const startLine = Math.max(0, symbol.line - 1);
     const range = new vscode.Range(startLine, 0, startLine, 1);
@@ -618,35 +792,38 @@ export class SymbolIndexer {
 
   private toSymbolKindFromFallback(kind: WorkerSymbolKind): vscode.SymbolKind {
     switch (kind) {
-      case 'class':
+      case "class":
         return vscode.SymbolKind.Class;
-      case 'interface':
+      case "interface":
         return vscode.SymbolKind.Interface;
-      case 'enum':
+      case "enum":
         return vscode.SymbolKind.Enum;
-      case 'namespace':
+      case "namespace":
         return vscode.SymbolKind.Namespace;
-      case 'module':
+      case "module":
         return vscode.SymbolKind.Module;
-      case 'typeAlias':
+      case "typeAlias":
         return vscode.SymbolKind.TypeParameter;
-      case 'method':
+      case "method":
         return vscode.SymbolKind.Method;
-      case 'variable':
+      case "variable":
         return vscode.SymbolKind.Variable;
-      case 'constant':
+      case "constant":
         return vscode.SymbolKind.Constant;
-      case 'field':
+      case "field":
         return vscode.SymbolKind.Field;
-      case 'property':
+      case "property":
         return vscode.SymbolKind.Property;
-      case 'function':
+      case "function":
       default:
         return vscode.SymbolKind.Function;
     }
   }
 
-  private flattenDocumentSymbols(uri: vscode.Uri, symbols: vscode.DocumentSymbol[]): ResolvedDocumentSymbol[] {
+  private flattenDocumentSymbols(
+    uri: vscode.Uri,
+    symbols: vscode.DocumentSymbol[],
+  ): ResolvedDocumentSymbol[] {
     const flattened: ResolvedDocumentSymbol[] = [];
     const collectSymbols = (entries: vscode.DocumentSymbol[]): void => {
       for (const current of entries) {
@@ -683,30 +860,36 @@ export class SymbolIndexer {
       }
     };
 
-    await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => run()));
+    await Promise.all(
+      Array.from({ length: Math.max(1, concurrency) }, () => run()),
+    );
   }
 
   private isCallableSymbol(kind: vscode.SymbolKind): boolean {
-    return kind === vscode.SymbolKind.Function || kind === vscode.SymbolKind.Method || kind === vscode.SymbolKind.Constructor;
+    return (
+      kind === vscode.SymbolKind.Function ||
+      kind === vscode.SymbolKind.Method ||
+      kind === vscode.SymbolKind.Constructor
+    );
   }
 
   private isVariableLikeSymbol(kind: vscode.SymbolKind): boolean {
     return (
-      kind === vscode.SymbolKind.Variable
-      || kind === vscode.SymbolKind.Constant
-      || kind === vscode.SymbolKind.Field
-      || kind === vscode.SymbolKind.Property
+      kind === vscode.SymbolKind.Variable ||
+      kind === vscode.SymbolKind.Constant ||
+      kind === vscode.SymbolKind.Field ||
+      kind === vscode.SymbolKind.Property
     );
   }
 
   private isClassLikeSymbol(kind: vscode.SymbolKind): boolean {
     return (
-      kind === vscode.SymbolKind.Class
-      || kind === vscode.SymbolKind.Interface
-      || kind === vscode.SymbolKind.Enum
-      || kind === vscode.SymbolKind.Module
-      || kind === vscode.SymbolKind.Namespace
-      || kind === vscode.SymbolKind.TypeParameter
+      kind === vscode.SymbolKind.Class ||
+      kind === vscode.SymbolKind.Interface ||
+      kind === vscode.SymbolKind.Enum ||
+      kind === vscode.SymbolKind.Module ||
+      kind === vscode.SymbolKind.Namespace ||
+      kind === vscode.SymbolKind.TypeParameter
     );
   }
 
@@ -720,11 +903,13 @@ export class SymbolIndexer {
       return true;
     }
 
-    return !/^<.*>$/.test(normalized) && normalized.toLowerCase() !== 'anonymous';
+    return (
+      !/^<.*>$/.test(normalized) && normalized.toLowerCase() !== "anonymous"
+    );
   }
 
   private shouldIndexUri(uri: vscode.Uri): boolean {
-    if (uri.scheme !== 'file') {
+    if (uri.scheme !== "file") {
       return false;
     }
 
@@ -733,8 +918,10 @@ export class SymbolIndexer {
       return false;
     }
 
-    const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath).replace(/\\/g, '/');
-    if (!relativePath || relativePath.startsWith('..')) {
+    const relativePath = path
+      .relative(workspaceFolder.uri.fsPath, uri.fsPath)
+      .replace(/\\/g, "/");
+    if (!relativePath || relativePath.startsWith("..")) {
       return false;
     }
 
@@ -742,8 +929,14 @@ export class SymbolIndexer {
   }
 
   private isExcludedPath(relativePath: string): boolean {
-    const segments = relativePath.split('/').map((segment) => segment.toLowerCase());
-    return segments.includes('node_modules') || segments.includes('dist') || segments.includes('build');
+    const segments = relativePath
+      .split("/")
+      .map((segment) => segment.toLowerCase());
+    return (
+      segments.includes("node_modules") ||
+      segments.includes("dist") ||
+      segments.includes("build")
+    );
   }
 
   private logIndexedVariables(symbols: IndexedSymbol[]): void {
@@ -752,18 +945,27 @@ export class SymbolIndexer {
         continue;
       }
 
-      this.logger.info(`[VSContext] Indexed variable: ${symbol.symbolName} (${symbol.filePath})`);
+      this.logger.info(
+        `[VSContext] Indexed variable: ${symbol.symbolName} (${symbol.filePath})`,
+      );
     }
   }
 
-  private logRawResolvedSymbols(uri: vscode.Uri, symbols: ResolvedDocumentSymbol[]): void {
+  private logRawResolvedSymbols(
+    uri: vscode.Uri,
+    symbols: ResolvedDocumentSymbol[],
+  ): void {
     if (!this.isSymbolDebugEnabled()) {
       return;
     }
 
-    this.logger.info(`[VSContext][debug] Raw symbols: ${symbols.length.toString()} (${toWorkspaceRelativePath(uri)})`);
+    this.logger.info(
+      `[VSContext][debug] Raw symbols: ${symbols.length.toString()} (${toWorkspaceRelativePath(uri)})`,
+    );
     for (const symbol of symbols) {
-      this.logger.info(`[VSContext][debug] Raw symbol: ${symbol.name} (${this.symbolKindLabel(symbol.kind)})`);
+      this.logger.info(
+        `[VSContext][debug] Raw symbol: ${symbol.name} (${this.symbolKindLabel(symbol.kind)})`,
+      );
     }
   }
 
@@ -773,17 +975,23 @@ export class SymbolIndexer {
     }
 
     for (const symbol of symbols) {
-      this.logger.info(`[VSContext][debug] Indexed symbol: ${symbol.symbolName} (${this.symbolKindLabel(symbol.symbolKind)})`);
+      this.logger.info(
+        `[VSContext][debug] Indexed symbol: ${symbol.symbolName} (${this.symbolKindLabel(symbol.symbolKind)})`,
+      );
     }
   }
 
   private symbolKindLabel(kind: vscode.SymbolKind): string {
-    const label = (vscode.SymbolKind as unknown as Record<number, string>)[kind];
-    return typeof label === 'string' ? label : kind.toString();
+    const label = (vscode.SymbolKind as unknown as Record<number, string>)[
+      kind
+    ];
+    return typeof label === "string" ? label : kind.toString();
   }
 
   private isSymbolDebugEnabled(): boolean {
-    return vscode.workspace.getConfiguration('vscontext').get<boolean>('debugSymbolDetection', false);
+    return vscode.workspace
+      .getConfiguration("vscontext")
+      .get<boolean>("debugSymbolDetection", false);
   }
 
   private async yieldToEventLoop(): Promise<void> {
@@ -796,7 +1004,11 @@ export class SymbolIndexer {
     callItem: vscode.CallHierarchyItem,
     allSymbols: Map<string, IndexedSymbol>,
   ): string | undefined {
-    const strictMatchId = createSymbolNodeId(callItem.uri, callItem.name, callItem.selectionRange.start.line);
+    const strictMatchId = createSymbolNodeId(
+      callItem.uri,
+      callItem.name,
+      callItem.selectionRange.start.line,
+    );
     if (allSymbols.has(strictMatchId)) {
       return strictMatchId;
     }
@@ -811,7 +1023,9 @@ export class SymbolIndexer {
         continue;
       }
 
-      const lineDistance = Math.abs(candidate.lineNumber - (callItem.selectionRange.start.line + 1));
+      const lineDistance = Math.abs(
+        candidate.lineNumber - (callItem.selectionRange.start.line + 1),
+      );
       if (lineDistance <= 2) {
         return candidate.id;
       }
@@ -820,29 +1034,38 @@ export class SymbolIndexer {
     return undefined;
   }
 
-  private toLocation(candidate: vscode.Location | vscode.LocationLink): vscode.Location | undefined {
+  private toLocation(
+    candidate: vscode.Location | vscode.LocationLink,
+  ): vscode.Location | undefined {
     if (candidate instanceof vscode.Location) {
       return candidate;
     }
 
-    if (!candidate || typeof candidate !== 'object') {
+    if (!candidate || typeof candidate !== "object") {
       return undefined;
     }
 
     const locationLink = candidate as vscode.LocationLink;
-    if (!(locationLink.targetUri instanceof vscode.Uri) || !(locationLink.targetSelectionRange instanceof vscode.Range)) {
+    if (
+      !(locationLink.targetUri instanceof vscode.Uri) ||
+      !(locationLink.targetSelectionRange instanceof vscode.Range)
+    ) {
       return undefined;
     }
 
-    return new vscode.Location(locationLink.targetUri, locationLink.targetSelectionRange);
+    return new vscode.Location(
+      locationLink.targetUri,
+      locationLink.targetSelectionRange,
+    );
   }
 
   private findMatchingSymbolIdFromLocation(
     location: vscode.Location,
     allSymbols: Map<string, IndexedSymbol>,
   ): string | undefined {
-    const candidates = [...allSymbols.values()]
-      .filter((symbol) => symbol.uri.toString() === location.uri.toString());
+    const candidates = [...allSymbols.values()].filter(
+      (symbol) => symbol.uri.toString() === location.uri.toString(),
+    );
 
     if (candidates.length === 0) {
       return undefined;
@@ -853,13 +1076,22 @@ export class SymbolIndexer {
 
     for (const candidate of candidates) {
       const containsPosition = candidate.range.contains(location.range.start);
-      const lineDistance = Math.abs(candidate.range.start.line - location.range.start.line);
-      const characterDistance = Math.abs(candidate.range.start.character - location.range.start.character);
-      const rangeSpan = ((candidate.range.end.line - candidate.range.start.line) * 1000)
-        + (candidate.range.end.character - candidate.range.start.character);
+      const lineDistance = Math.abs(
+        candidate.range.start.line - location.range.start.line,
+      );
+      const characterDistance = Math.abs(
+        candidate.range.start.character - location.range.start.character,
+      );
+      const rangeSpan =
+        (candidate.range.end.line - candidate.range.start.line) * 1000 +
+        (candidate.range.end.character - candidate.range.start.character);
 
       const basePenalty = containsPosition ? 0 : 100_000;
-      const score = basePenalty + (lineDistance * 100) + characterDistance + Math.max(0, rangeSpan);
+      const score =
+        basePenalty +
+        lineDistance * 100 +
+        characterDistance +
+        Math.max(0, rangeSpan);
       if (score < bestScore) {
         bestScore = score;
         bestCandidate = candidate;
@@ -870,7 +1102,10 @@ export class SymbolIndexer {
       return undefined;
     }
 
-    if (bestScore >= 100_000 && Math.abs(bestCandidate.range.start.line - location.range.start.line) > 3) {
+    if (
+      bestScore >= 100_000 &&
+      Math.abs(bestCandidate.range.start.line - location.range.start.line) > 3
+    ) {
       return undefined;
     }
 
@@ -892,10 +1127,12 @@ export class SymbolIndexer {
     }
 
     const sorted = containingCandidates.sort((left, right) => {
-      const leftSpan = ((left.range.end.line - left.range.start.line) * 1000)
-        + (left.range.end.character - left.range.start.character);
-      const rightSpan = ((right.range.end.line - right.range.start.line) * 1000)
-        + (right.range.end.character - right.range.start.character);
+      const leftSpan =
+        (left.range.end.line - left.range.start.line) * 1000 +
+        (left.range.end.character - left.range.start.character);
+      const rightSpan =
+        (right.range.end.line - right.range.start.line) * 1000 +
+        (right.range.end.character - right.range.start.character);
 
       if (leftSpan !== rightSpan) {
         return leftSpan - rightSpan;
@@ -907,14 +1144,18 @@ export class SymbolIndexer {
     return sorted[0]?.id;
   }
 
-  private isLikelyDeclarationReference(symbol: IndexedSymbol, location: vscode.Location): boolean {
+  private isLikelyDeclarationReference(
+    symbol: IndexedSymbol,
+    location: vscode.Location,
+  ): boolean {
     if (symbol.uri.toString() !== location.uri.toString()) {
       return false;
     }
 
     return (
-      symbol.range.start.line === location.range.start.line
-      && Math.abs(symbol.range.start.character - location.range.start.character) <= 2
+      symbol.range.start.line === location.range.start.line &&
+      Math.abs(symbol.range.start.character - location.range.start.character) <=
+        2
     );
   }
 
@@ -922,7 +1163,7 @@ export class SymbolIndexer {
     symbolName: string,
     location: vscode.Location,
     documentCache: Map<string, vscode.TextDocument>,
-  ): Promise<'reads' | 'writes'> {
+  ): Promise<"reads" | "writes"> {
     const cacheKey = location.uri.toString();
     let document = documentCache.get(cacheKey);
 
@@ -931,68 +1172,71 @@ export class SymbolIndexer {
         document = await vscode.workspace.openTextDocument(location.uri);
         documentCache.set(cacheKey, document);
       } catch {
-        return 'reads';
+        return "reads";
       }
     }
 
     const lineNumber = location.range.start.line;
     if (lineNumber < 0 || lineNumber >= document.lineCount) {
-      return 'reads';
+      return "reads";
     }
 
     const lineText = document.lineAt(lineNumber).text;
     const startCharacter = location.range.start.character;
-    const endCharacter = location.range.end.character > startCharacter
-      ? location.range.end.character
-      : startCharacter + symbolName.length;
+    const endCharacter =
+      location.range.end.character > startCharacter
+        ? location.range.end.character
+        : startCharacter + symbolName.length;
 
     const before = lineText.slice(0, Math.max(0, startCharacter));
     const after = lineText.slice(Math.max(0, endCharacter));
 
     if (/(\+\+|--)\s*$/.test(before.trimEnd()) || /^\s*(\+\+|--)/.test(after)) {
-      return 'writes';
+      return "writes";
     }
 
     const trimmedAfter = after.trimStart();
     const assignmentOperators = [
-      '+=',
-      '-=',
-      '*=',
-      '/=',
-      '%=',
-      '&&=',
-      '||=',
-      '??=',
-      '<<=',
-      '>>=',
-      '>>>=',
-      '&=',
-      '|=',
-      '^=',
-      ':=',
+      "+=",
+      "-=",
+      "*=",
+      "/=",
+      "%=",
+      "&&=",
+      "||=",
+      "??=",
+      "<<=",
+      ">>=",
+      ">>>=",
+      "&=",
+      "|=",
+      "^=",
+      ":=",
     ];
 
-    if (assignmentOperators.some((operator) => trimmedAfter.startsWith(operator))) {
-      return 'writes';
+    if (
+      assignmentOperators.some((operator) => trimmedAfter.startsWith(operator))
+    ) {
+      return "writes";
     }
 
     if (
-      trimmedAfter.startsWith('=')
-      && !trimmedAfter.startsWith('==')
-      && !trimmedAfter.startsWith('===')
-      && !trimmedAfter.startsWith('=>')
+      trimmedAfter.startsWith("=") &&
+      !trimmedAfter.startsWith("==") &&
+      !trimmedAfter.startsWith("===") &&
+      !trimmedAfter.startsWith("=>")
     ) {
-      return 'writes';
+      return "writes";
     }
 
-    if (/^\s*[,\]\)}]*\s*=/.test(after)) {
-      return 'writes';
+    if (/^\s*[,\]\)}]+\s*=/.test(after)) {
+      return "writes";
     }
 
-    return 'reads';
+    return "reads";
   }
 
   private normalizeName(name: string): string {
-    return name.trim().replace(/\(\)$/, '');
+    return name.trim().replace(/\(\)$/, "");
   }
 }

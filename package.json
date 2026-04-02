@@ -19,7 +19,8 @@
     "theme": "dark"
   },
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.95.0",
+    "node": ">=18"
   },
   "main": "./out/extension.js",
   "activationEvents": [
@@ -319,6 +320,7 @@
     "resources/activity-bar.svg"
   ],
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.17.50",
     "@types/vscode": "^1.95.0",
@@ -326,12 +328,16 @@
     "nyc": "^15.1.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
-    "vscode": "^1.1.37"
+    "vscode": "^1.1.36"
   },
   "dependencies": {
+    "better-sqlite3": "^12.8.0",
     "cytoscape": "^3.31.2",
     "cytoscape-dagre": "^2.5.0",
     "dagre": "^0.8.5",
+    "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
+    "sigma": "^3.0.2",
     "tree-sitter": "0.21.1",
     "tree-sitter-c": "0.21.4",
     "tree-sitter-c-sharp": "0.23.1",

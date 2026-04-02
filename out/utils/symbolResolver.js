@@ -41,7 +41,7 @@ const OPEN_EXPLORER_ACTION = 'Open VSContext Explorer';
 const PICK_INDEXED_SYMBOL_ACTION = 'Choose Indexed Symbol';
 async function resolveSelectedSymbol(graph, explicitNodeId, options) {
     if (explicitNodeId) {
-        return graph.nodes.get(explicitNodeId);
+        return getGraphNode(graph, explicitNodeId);
     }
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
@@ -58,8 +58,8 @@ async function resolveSelectedSymbol(graph, explicitNodeId, options) {
     const filePath = (0, workspaceScanner_1.toWorkspaceRelativePath)(editor.document.uri);
     const fileNodeIds = graph.fileIndex.get(filePath) ?? [];
     const fileNodes = fileNodeIds
-        .map((nodeId) => graph.nodes.get(nodeId))
-        .filter((node) => node !== undefined);
+        .map((nodeId) => getGraphNode(graph, nodeId))
+        .filter(isGraphNode);
     const lineNumber = editor.selection.active.line + 1;
     const cursorMatch = fileNodes
         .filter((node) => lineNumber >= node.rangeStartLine && lineNumber <= node.rangeEndLine)
@@ -119,6 +119,13 @@ async function promptForSymbolSelection(nodes, placeHolder, includeFilePathInDes
         return undefined;
     }
     return nodes.find((node) => node.id === picked.nodeId);
+}
+function getGraphNode(graph, nodeId) {
+    const node = graph.nodes.get(nodeId);
+    return isGraphNode(node) ? node : undefined;
+}
+function isGraphNode(node) {
+    return node !== undefined;
 }
 function toSymbolKindLabel(kind) {
     const labels = vscode.SymbolKind;

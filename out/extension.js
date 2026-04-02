@@ -77,6 +77,8 @@ async function reconcileHydratedGraph(graphBuilder, logger, maxIndexedFiles, pro
             upserts: 0,
             deletes: 0,
             cancelled: false,
+            scannedFileCount: 0,
+            skippedByLimit: 0,
         };
     }
     // Stage 1: Scan workspace
@@ -93,6 +95,8 @@ async function reconcileHydratedGraph(graphBuilder, logger, maxIndexedFiles, pro
                 upserts: 0,
                 deletes: 0,
                 cancelled: true,
+                scannedFileCount: 0,
+                skippedByLimit: 0,
             };
         }
         const filePath = (0, workspaceScanner_1.toWorkspaceRelativePath)(uri);
@@ -141,6 +145,8 @@ async function reconcileHydratedGraph(graphBuilder, logger, maxIndexedFiles, pro
                 upserts: 0,
                 deletes: processed,
                 cancelled: true,
+                scannedFileCount: scanResult.files.length,
+                skippedByLimit: scanResult.skippedByLimit,
             };
         }
         await graphBuilder.removeDocument(uri);
@@ -167,6 +173,8 @@ async function reconcileHydratedGraph(graphBuilder, logger, maxIndexedFiles, pro
                 upserts: appliedUpserts,
                 deletes: deletedUris.length,
                 cancelled: true,
+                scannedFileCount: scanResult.files.length,
+                skippedByLimit: scanResult.skippedByLimit,
             };
         }
         await graphBuilder.upsertDocument(uri);
@@ -192,6 +200,8 @@ async function reconcileHydratedGraph(graphBuilder, logger, maxIndexedFiles, pro
         upserts: appliedUpserts,
         deletes: deletedUris.length,
         cancelled: false,
+        scannedFileCount: scanResult.files.length,
+        skippedByLimit: scanResult.skippedByLimit,
     };
 }
 async function activate(context) {
@@ -207,6 +217,17 @@ async function activate(context) {
         const graphBuilder = new graphBuilder_1.WorkspaceGraphBuilder(symbolIndexer, logger, cacheFileUri);
         let treeProvider;
         let initializationPromise;
+        let largeWorkspaceWarningShown = false;
+        const showLargeWorkspaceWarningIfNeeded = async (status) => {
+            if (!status || status.skippedByLimit <= 0 || largeWorkspaceWarningShown) {
+                return;
+            }
+            largeWorkspaceWarningShown = true;
+            const action = await vscode.window.showWarningMessage(`VSContext indexed ${status.scannedFileCount} supported files and skipped ${status.skippedByLimit} more because the workspace exceeded the current limit.`, 'Open Settings');
+            if (action === 'Open Settings') {
+                void vscode.commands.executeCommand('workbench.action.openSettings', 'vscontext.maxIndexedFiles');
+            }
+        };
         const ensureGraphInitialized = async () => {
             if (graphBuilder.hasCompletedInitialIndex()) {
                 return;
@@ -234,6 +255,7 @@ async function activate(context) {
                             else if (refreshed.cancelled) {
                                 logger.info('[VSContext] Graph refresh was cancelled by user.');
                             }
+                            await showLargeWorkspaceWarningIfNeeded(refreshed);
                         }
                         catch (error) {
                             logger.warn(`Failed to reconcile hydrated graph state. ${String(error)}`);
@@ -250,6 +272,7 @@ async function activate(context) {
                     try {
                         progress.report({ message: 'Indexing source files...' });
                         await graphBuilder.buildWorkspaceGraph();
+                        await showLargeWorkspaceWarningIfNeeded(graphBuilder.getLastIndexResult());
                         treeProvider.refresh();
                         logger.info('[VSContext] Full workspace indexing completed.');
                     }
@@ -383,7 +406,7 @@ async function activate(context) {
             if (refreshTimer) {
                 clearTimeout(refreshTimer);
             }
-            void graphBuilder.flushPersistence();
+            void graphBuilder.dispose();
         }), vscode.workspace.onDidSaveTextDocument((document) => {
             if (document.uri.scheme !== 'file') {
                 return;
@@ -414,17 +437,17 @@ async function activate(context) {
                 if (!nodeId || typeof nodeId !== 'string') {
                     return;
                 }
-                const graph = await graphBuilder.getGraph();
-                const node = graph.nodes.get(nodeId);
+                await graphBuilder.getGraph();
+                const node = graphBuilder.getNode(nodeId);
                 if (!node) {
-                    void vscode.window.showWarningMessage('The selected symbol is no longer available in the graph.');
+                    void vscode.window.showWarningMessage('The selected symbol is no longer available in the graph. Save the file, refresh the index, and try again.');
                     return;
                 }
                 await (0, symbolResolver_1.openGraphNodeInEditor)(node);
             }
             catch (error) {
                 logger.error('Command failed: vscontext.openNode', error);
-                void vscode.window.showErrorMessage('VSContext failed to open the selected symbol.');
+                void vscode.window.showErrorMessage('VSContext failed to open the selected symbol. Refresh the index or open a supported source file, then try again.');
             }
         }), vscode.commands.registerCommand('vscontext.traceExecution', async (argument) => {
             try {
@@ -451,17 +474,17 @@ async function activate(context) {
                 const result = await (0, executionTrace_1.traceExecutionPath)(graph, selectedNode.id, 25);
                 logger.info(`Trace command completed with ${result.nodes.length} traversal nodes.`);
                 (0, executionPanel_1.openExecutionPanel)(result, logger, async (nodeId) => {
-                    const latestGraph = await graphBuilder.getGraph();
-                    const node = latestGraph.nodes.get(nodeId);
+                    await graphBuilder.getGraph();
+                    const node = graphBuilder.getNode(nodeId);
                     if (!node) {
-                        throw new Error('The selected symbol is no longer available in the graph.');
+                        throw new Error('The selected symbol is no longer available in the graph. Refresh the index and try again.');
                     }
                     await (0, symbolResolver_1.openGraphNodeInEditor)(node);
                 });
             }
             catch (error) {
                 logger.error('Command failed: vscontext.traceExecution', error);
-                void vscode.window.showErrorMessage('VSContext trace execution failed.');
+                void vscode.window.showErrorMessage('VSContext trace execution failed. Wait for indexing to finish or reopen the active file, then try again.');
             }
         }), vscode.commands.registerCommand('vscontext.findImpact', async (argument) => {
             try {
@@ -488,17 +511,17 @@ async function activate(context) {
                 const result = await (0, impactAnalysis_1.findImpactOfChange)(graph, selectedNode.id, 25);
                 logger.info(`Impact command completed with ${result.nodes.length} traversal nodes.`);
                 (0, impactPanel_1.openImpactPanel)(result, logger, async (nodeId) => {
-                    const latestGraph = await graphBuilder.getGraph();
-                    const node = latestGraph.nodes.get(nodeId);
+                    await graphBuilder.getGraph();
+                    const node = graphBuilder.getNode(nodeId);
                     if (!node) {
-                        throw new Error('The selected symbol is no longer available in the graph.');
+                        throw new Error('The selected symbol is no longer available in the graph. Refresh the index and try again.');
                     }
                     await (0, symbolResolver_1.openGraphNodeInEditor)(node);
                 });
             }
             catch (error) {
                 logger.error('Command failed: vscontext.findImpact', error);
-                void vscode.window.showErrorMessage('VSContext impact analysis failed.');
+                void vscode.window.showErrorMessage('VSContext impact analysis failed. Wait for indexing to finish or reopen the active file, then try again.');
             }
         }), vscode.commands.registerCommand('vscontext.viewCodeGraph', async () => {
             try {
@@ -508,7 +531,7 @@ async function activate(context) {
             }
             catch (error) {
                 logger.error('Command failed: vscontext.viewCodeGraph', error);
-                void vscode.window.showErrorMessage('VSContext failed to open the code graph view.');
+                void vscode.window.showErrorMessage('VSContext failed to open the code graph view. Refresh the index or narrow the workspace, then try again.');
             }
         }));
         treeProvider.refresh();
