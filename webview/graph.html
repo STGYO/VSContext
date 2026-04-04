@@ -21,7 +21,7 @@
                     <button
                         id="menu-toggle"
                         type="button"
-                        aria-haspopup="menu"
+                        aria-haspopup="true"
                         aria-expanded="false"
                         aria-controls="overflow-menu"
                         title="Graph controls"
@@ -42,7 +42,6 @@
                     <div
                         id="overflow-menu"
                         class="overflow-menu"
-                        role="menu"
                         aria-label="Graph controls"
                         hidden
                     >
@@ -82,8 +81,7 @@
                             <button
                                 id="toggle-containment"
                                 type="button"
-                                role="menuitemcheckbox"
-                                aria-checked="false"
+                                aria-pressed="false"
                                 data-active="false"
                                 title="Hide containment-only relationships"
                             >
@@ -92,8 +90,7 @@
                             <button
                                 id="toggle-variables"
                                 type="button"
-                                role="menuitemcheckbox"
-                                aria-checked="false"
+                                aria-pressed="false"
                                 data-active="false"
                                 title="Hide variable nodes"
                             >
@@ -102,12 +99,20 @@
                             <button
                                 id="toggle-smart-labels"
                                 type="button"
-                                role="menuitemcheckbox"
-                                aria-checked="true"
+                                aria-pressed="true"
                                 data-active="true"
                                 title="Hide most labels when zoomed out"
                             >
                                 Smart Labels: On
+                            </button>
+                            <button
+                                id="toggle-edge-declutter"
+                                type="button"
+                                aria-pressed="false"
+                                data-active="false"
+                                title="Reduce edge visual density with taxi routing and adaptive opacity"
+                            >
+                                Edge De-clutter: Off
                             </button>
                         </div>
 
@@ -120,8 +125,7 @@
                             <button
                                 id="toggle-edge-calls"
                                 type="button"
-                                role="menuitemcheckbox"
-                                aria-checked="true"
+                                aria-pressed="true"
                                 data-active="true"
                                 title="Toggle calls edges"
                             >
@@ -130,8 +134,7 @@
                             <button
                                 id="toggle-edge-implements"
                                 type="button"
-                                role="menuitemcheckbox"
-                                aria-checked="true"
+                                aria-pressed="true"
                                 data-active="true"
                                 title="Toggle implements edges"
                             >
@@ -140,8 +143,7 @@
                             <button
                                 id="toggle-edge-reads"
                                 type="button"
-                                role="menuitemcheckbox"
-                                aria-checked="true"
+                                aria-pressed="true"
                                 data-active="true"
                                 title="Toggle reads edges"
                             >
@@ -150,8 +152,7 @@
                             <button
                                 id="toggle-edge-writes"
                                 type="button"
-                                role="menuitemcheckbox"
-                                aria-checked="true"
+                                aria-pressed="true"
                                 data-active="true"
                                 title="Toggle writes edges"
                             >
@@ -160,8 +161,7 @@
                             <button
                                 id="toggle-edge-file-dependency"
                                 type="button"
-                                role="menuitemcheckbox"
-                                aria-checked="true"
+                                aria-pressed="true"
                                 data-active="true"
                                 title="Toggle file dependency edges"
                             >
@@ -277,10 +277,11 @@
                             </li>
                         </ul>
                         <p class="legend-help">
-                            Double-click a parent boundary to collapse or
-                            expand. Ctrl/Cmd+Click or Alt+Click opens code.
-                            Keyboard: arrows move focus, Enter opens, +/- zoom,
-                            F fit, V view mode, D direction, / search.
+                            Use Collapse Groups and Expand Groups from controls
+                            to toggle hierarchy visibility. Ctrl/Cmd+Click a
+                            node or press Enter on focused node to open code.
+                            Keyboard: arrows move focus, +/- zoom, F fit, V
+                            view mode, D direction, / search.
                         </p>
                     </div>
                 </aside>
@@ -289,10 +290,10 @@
             </section>
         </div>
 
-        <script nonce="{{nonce}}" src="{{graphologyUri}}"></script>
-        <script nonce="{{nonce}}" src="{{sigmaUri}}"></script>
-        <script nonce="{{nonce}}" src="{{dagreUri}}"></script>
-        <script nonce="{{nonce}}" src="{{sigmaRendererUri}}"></script>
+        <script nonce="{{nonce}}" src="{{cytoscapeUri}}"></script>
+        <script nonce="{{nonce}}" src="{{layoutMathUri}}"></script>
+        <script nonce="{{nonce}}" src="{{cytoscapeRendererUri}}"></script>
+        <script nonce="{{nonce}}" src="{{graphKeyboardUri}}"></script>
         <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
     </body>
 </html>

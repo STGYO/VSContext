@@ -1,6 +1,6 @@
 import * as path from "path";
 import { promises as fs } from "fs";
-import * as vscode from "vscode";
+import type * as vscode from "vscode";
 
 import { Logger } from "../utils/logger";
 import type {
@@ -57,24 +57,29 @@ let graphPanel: vscode.WebviewPanel | undefined;
 let graphPanelDisposables: vscode.Disposable[] = [];
 let graphSession: WebviewGraphSession | undefined;
 
+function getVscodeApi(): typeof import("vscode") {
+  return require("vscode") as typeof import("vscode");
+}
+
 export async function openGraphWebviewPanel(
   context: vscode.ExtensionContext,
   payload: CodeGraphPayload,
   logger: Logger,
   onOpenNode: (target: NodeNavigationTarget) => Promise<void>,
 ): Promise<void> {
+  const vscodeApi = getVscodeApi();
   graphSession = createWebviewGraphSession(payload);
 
   if (graphPanel) {
-    graphPanel.reveal(vscode.ViewColumn.Beside, true);
+    graphPanel.reveal(vscodeApi.ViewColumn.Beside, true);
     await postInitialGraphData(graphPanel.webview);
     return;
   }
 
-  graphPanel = vscode.window.createWebviewPanel(
+  graphPanel = vscodeApi.window.createWebviewPanel(
     "vscontext.codeGraph",
     "VSContext Code Graph",
-    vscode.ViewColumn.Beside,
+    vscodeApi.ViewColumn.Beside,
     {
       enableScripts: true,
       retainContextWhenHidden: false,
@@ -83,19 +88,7 @@ export async function openGraphWebviewPanel(
         joinExtensionPath(
           context.extensionUri,
           "node_modules",
-          "sigma",
-          "dist",
-        ),
-        joinExtensionPath(
-          context.extensionUri,
-          "node_modules",
-          "graphology",
-          "dist",
-        ),
-        joinExtensionPath(
-          context.extensionUri,
-          "node_modules",
-          "dagre",
+          "cytoscape",
           "dist",
         ),
       ],
@@ -178,20 +171,19 @@ function createWebviewGraphSession(
       visibleNodeIds.add(node.id);
     }
   } else {
-    const fileNodes = sortedNodes.filter((node) => node.type === "file");
-    const nonFileNodes = sortedNodes.filter((node) => node.type !== "file");
+    const fileRoots = sortedNodes.filter((node) => node.type === "file");
+    const branchRoots = sortedNodes.filter((node) => node.type === "branch");
+    const symbolNodes = sortedNodes.filter(
+      (node) => node.type !== "file" && node.type !== "branch",
+    );
 
-    for (const fileNode of fileNodes) {
-      visibleNodeIds.add(fileNode.id);
-    }
-
-    const symbolSlots = Math.max(0, INITIAL_NODE_LIMIT - fileNodes.length);
-    const initiallyVisibleNodes = nonFileNodes.slice(0, symbolSlots);
+    const prioritizedNodes = [...fileRoots, ...branchRoots, ...symbolNodes];
+    const initiallyVisibleNodes = prioritizedNodes.slice(0, INITIAL_NODE_LIMIT);
     for (const node of initiallyVisibleNodes) {
       visibleNodeIds.add(node.id);
     }
 
-    remainingNodes = nonFileNodes.slice(symbolSlots);
+    remainingNodes = prioritizedNodes.slice(INITIAL_NODE_LIMIT);
     wasTruncated = remainingNodes.length > 0;
   }
 
@@ -238,6 +230,9 @@ async function postNextGraphChunk(webview: vscode.Webview): Promise<void> {
     loadState: buildLoadState(graphSession),
     totals: graphSession.totals,
     appendedNodeCount: nextNodes.length,
+    layoutHint: {
+      incrementalRelayout: true,
+    },
   });
 }
 
@@ -351,35 +346,23 @@ async function renderGraphHtml(
   const scriptUri = webview.asWebviewUri(
     joinExtensionPath(extensionUri, "webview", "graph.js"),
   );
-  const sigmaUri = webview.asWebviewUri(
+  const graphKeyboardUri = webview.asWebviewUri(
+    joinExtensionPath(extensionUri, "webview", "graphKeyboard.js"),
+  );
+  const cytoscapeUri = webview.asWebviewUri(
     joinExtensionPath(
       extensionUri,
       "node_modules",
-      "sigma",
+      "cytoscape",
       "dist",
-      "sigma.min.js",
+      "cytoscape.min.js",
     ),
   );
-  const graphologyUri = webview.asWebviewUri(
-    joinExtensionPath(
-      extensionUri,
-      "node_modules",
-      "graphology",
-      "dist",
-      "graphology.umd.min.js",
-    ),
+  const cytoscapeRendererUri = webview.asWebviewUri(
+    joinExtensionPath(extensionUri, "webview", "cytoscapeRenderer.js"),
   );
-  const dagreUri = webview.asWebviewUri(
-    joinExtensionPath(
-      extensionUri,
-      "node_modules",
-      "dagre",
-      "dist",
-      "dagre.min.js",
-    ),
-  );
-  const sigmaRendererUri = webview.asWebviewUri(
-    joinExtensionPath(extensionUri, "webview", "sigmaRenderer.js"),
+  const layoutMathUri = webview.asWebviewUri(
+    joinExtensionPath(extensionUri, "webview", "layoutMath.js"),
   );
 
   const nonce = createNonce();
@@ -396,10 +379,10 @@ async function renderGraphHtml(
     .replaceAll("{{nonce}}", nonce)
     .replaceAll("{{styleUri}}", cssUri.toString())
     .replaceAll("{{scriptUri}}", scriptUri.toString())
-    .replaceAll("{{sigmaUri}}", sigmaUri.toString())
-    .replaceAll("{{graphologyUri}}", graphologyUri.toString())
-    .replaceAll("{{dagreUri}}", dagreUri.toString())
-    .replaceAll("{{sigmaRendererUri}}", sigmaRendererUri.toString())
+    .replaceAll("{{graphKeyboardUri}}", graphKeyboardUri.toString())
+    .replaceAll("{{cytoscapeUri}}", cytoscapeUri.toString())
+    .replaceAll("{{layoutMathUri}}", layoutMathUri.toString())
+    .replaceAll("{{cytoscapeRendererUri}}", cytoscapeRendererUri.toString())
     .replaceAll("{{htmlDir}}", path.dirname(htmlUri.fsPath));
 }
 
@@ -456,18 +439,19 @@ function fallbackTemplate(): string {
 
           <div class="menu-group" role="group" aria-label="Visibility filters">
             <p class="menu-heading">Visibility</p>
-            <button id="toggle-containment" type="button" data-active="false" title="Hide containment-only relationships">Hide Structural Edges</button>
-            <button id="toggle-variables" type="button" data-active="false" title="Hide variable nodes">Hide Variables</button>
-            <button id="toggle-smart-labels" type="button" data-active="true" title="Hide most labels when zoomed out">Smart Labels: On</button>
+            <button id="toggle-containment" type="button" aria-pressed="false" data-active="false" title="Hide containment-only relationships">Hide Structural Edges</button>
+            <button id="toggle-variables" type="button" aria-pressed="false" data-active="false" title="Hide variable nodes">Hide Variables</button>
+            <button id="toggle-smart-labels" type="button" aria-pressed="true" data-active="true" title="Hide most labels when zoomed out">Smart Labels: On</button>
+            <button id="toggle-edge-declutter" type="button" aria-pressed="false" data-active="false" title="Reduce edge visual density with taxi routing and adaptive opacity">Edge De-clutter: Off</button>
           </div>
 
           <div class="menu-group" role="group" aria-label="Edge type filters">
             <p class="menu-heading">Edge Types</p>
-            <button id="toggle-edge-calls" type="button" data-active="true" title="Toggle calls edges">Calls: On</button>
-            <button id="toggle-edge-implements" type="button" data-active="true" title="Toggle implements edges">Implements: On</button>
-            <button id="toggle-edge-reads" type="button" data-active="true" title="Toggle reads edges">Reads: On</button>
-            <button id="toggle-edge-writes" type="button" data-active="true" title="Toggle writes edges">Writes: On</button>
-            <button id="toggle-edge-file-dependency" type="button" data-active="true" title="Toggle file dependency edges">File Deps: On</button>
+            <button id="toggle-edge-calls" type="button" aria-pressed="true" data-active="true" title="Toggle calls edges">Calls: On</button>
+            <button id="toggle-edge-implements" type="button" aria-pressed="true" data-active="true" title="Toggle implements edges">Implements: On</button>
+            <button id="toggle-edge-reads" type="button" aria-pressed="true" data-active="true" title="Toggle reads edges">Reads: On</button>
+            <button id="toggle-edge-writes" type="button" aria-pressed="true" data-active="true" title="Toggle writes edges">Writes: On</button>
+            <button id="toggle-edge-file-dependency" type="button" aria-pressed="true" data-active="true" title="Toggle file dependency edges">File Deps: On</button>
             <button id="reset-filters" type="button" title="Reset all clarity controls">Reset</button>
           </div>
         </div>
@@ -502,16 +486,16 @@ function fallbackTemplate(): string {
             <li><span class="legend-swatch" data-node-type="method"></span>Method</li>
             <li><span class="legend-swatch" data-node-type="variable"></span>Variable</li>
           </ul>
-          <p class="legend-help">Double-click a parent boundary to collapse or expand. Ctrl/Cmd+Click or Alt+Click opens code. Keyboard: arrows move focus, Enter opens, +/- zoom, F fit, V view mode, D direction, / search.</p>
+          <p class="legend-help">Use Collapse Groups and Expand Groups from controls to toggle hierarchy visibility. Ctrl/Cmd+Click a node or press Enter on focused node to open code. Keyboard: arrows move focus, +/- zoom, F fit, V view mode, D direction, / search.</p>
         </div>
       </aside>
       <div id="node-tooltip" role="tooltip" hidden></div>
     </section>
   </div>
-  <script nonce="{{nonce}}" src="{{graphologyUri}}"></script>
-  <script nonce="{{nonce}}" src="{{sigmaUri}}"></script>
-  <script nonce="{{nonce}}" src="{{dagreUri}}"></script>
-  <script nonce="{{nonce}}" src="{{sigmaRendererUri}}"></script>
+  <script nonce="{{nonce}}" src="{{cytoscapeUri}}"></script>
+  <script nonce="{{nonce}}" src="{{layoutMathUri}}"></script>
+  <script nonce="{{nonce}}" src="{{cytoscapeRendererUri}}"></script>
+  <script nonce="{{nonce}}" src="{{graphKeyboardUri}}"></script>
   <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
 </body>
 </html>`;
@@ -534,5 +518,13 @@ function joinExtensionPath(
   baseUri: vscode.Uri,
   ...segments: string[]
 ): vscode.Uri {
-  return vscode.Uri.file(path.join(baseUri.fsPath, ...segments));
+  const vscodeApi = getVscodeApi();
+  return vscodeApi.Uri.file(path.join(baseUri.fsPath, ...segments));
 }
+
+export const graphWebviewProviderTestApi = {
+  createWebviewGraphSession,
+  buildVisiblePayload,
+  buildAppendPayload,
+  buildLoadState,
+} as const;

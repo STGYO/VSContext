@@ -18,7 +18,7 @@ function isHybridQueryResult(value: unknown): value is HybridQueryResult {
   );
 }
 
-export class SavedSearchesTreeProvider implements vscode.TreeDataProvider<TreeNode> {
+export class SavedSearchesTreeProvider implements vscode.TreeDataProvider<TreeNode>, vscode.Disposable {
   private _onDidChangeTreeData: vscode.EventEmitter<TreeNode | undefined> = new vscode.EventEmitter<TreeNode | undefined>();
   public readonly onDidChangeTreeData: vscode.Event<TreeNode | undefined> = this._onDidChangeTreeData.event;
 
@@ -26,6 +26,10 @@ export class SavedSearchesTreeProvider implements vscode.TreeDataProvider<TreeNo
 
   refresh(): void {
     this._onDidChangeTreeData.fire(undefined);
+  }
+
+  dispose(): void {
+    this._onDidChangeTreeData.dispose();
   }
 
   getTreeItem(element: TreeNode): vscode.TreeItem {
@@ -168,9 +172,8 @@ export class SavedSearchCommandsManager {
           this.manager.updateSearchRun(searchId);
           this.treeProvider.refresh();
 
-          // Trigger chat command with saved search parameters
-          const chatCommand = `/vscontext.${search.command} ${search.prompt}`;
-          await vscode.commands.executeCommand('workbench.action.chat.open');
+          const chatCommand = `@vscontext /${search.command} ${search.prompt}`.trim();
+          await vscode.commands.executeCommand('workbench.action.chat.open', chatCommand);
           this.logger.info(`[VSContext] Executed saved search: ${search.name}`);
         }
       })

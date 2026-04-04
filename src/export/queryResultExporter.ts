@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as path from 'path';
+
 import { type HybridQueryResult, type FileRelationshipEvidence } from '../chat/queryOrchestrator';
 import { type ExecutionTraceResult, type TraversalNode, type TraversalEdge } from '../analysis/executionTrace';
 import { type Logger } from '../utils/logger';
@@ -342,6 +345,81 @@ export class QueryResultExporter {
     return html;
   }
 
+  buildPdfLines(result: HybridQueryResult, options: Partial<ExportOptions> = {}): string[] {
+    const opts = { ...DEFAULT_EXPORT_OPTIONS, ...options };
+    const lines: string[] = [];
+
+    lines.push(result.title);
+    lines.push(`Template: ${result.templateId}`);
+    lines.push(`Prompt: ${result.prompt}`);
+    lines.push(`Confidence: ${result.confidence}`);
+    lines.push('');
+
+    if (opts.includeMetadata && result.focusNode) {
+      lines.push('Focus Node');
+      lines.push(`Symbol: ${result.focusNode.symbolName}`);
+      lines.push(`Kind: ${typeof result.focusNode.symbolKind === 'number' ? result.focusNode.symbolKind : String(result.focusNode.symbolKind)}`);
+      lines.push(`File: ${result.focusNode.filePath}`);
+      lines.push('');
+    }
+
+    if (opts.includeQueryPlan) {
+      lines.push('Query Plan');
+      lines.push(`Graph Queries: ${result.plan.graphQueries.join(', ')}`);
+      lines.push(`Semantic Queries: ${result.plan.semanticQueries.join(', ')}`);
+      lines.push(`Trace: ${result.plan.useTrace ? 'Yes' : 'No'}`);
+      lines.push(`Impact: ${result.plan.useImpact ? 'Yes' : 'No'}`);
+      lines.push('');
+    }
+
+    if (opts.includeEvidence) {
+      if (result.semanticHits.length > 0) {
+        lines.push('Semantic Evidence');
+        for (const hit of result.semanticHits) {
+          lines.push(`- ${hit.filePath} (${hit.score.toFixed(3)}): ${hit.title.substring(0, 150)}`);
+        }
+        lines.push('');
+      }
+
+      if (result.fileRelationships.length > 0) {
+        lines.push('File Relationships');
+        for (const rel of result.fileRelationships) {
+          lines.push(`- ${rel.sourceFilePath} -> ${rel.targetFilePath} (${rel.relationship})`);
+        }
+        lines.push('');
+      }
+
+      if (result.traceResult && result.traceResult.nodes.length > 0) {
+        lines.push('Trace Nodes');
+        for (const node of result.traceResult.nodes) {
+          lines.push(`- ${node.symbolName} [${node.nodeId}] depth ${node.depth}`);
+        }
+        lines.push('');
+      }
+
+      if (result.impactResult && result.impactResult.nodes.length > 0) {
+        lines.push('Impact Nodes');
+        for (const node of result.impactResult.nodes) {
+          lines.push(`- ${node.symbolName} [${node.nodeId}] depth ${node.depth}`);
+        }
+        lines.push('');
+      }
+    }
+
+    if (opts.includeCaveats && result.caveats.length > 0) {
+      lines.push('Caveats');
+      for (const caveat of result.caveats) {
+        lines.push(`- ${caveat}`);
+      }
+      lines.push('');
+    }
+
+    lines.push('Rendered Markdown');
+    lines.push(result.renderedMarkdown);
+
+    return lines;
+  }
+
   private escapeCsvValue(value: string): string {
     if (value.includes(',') || value.includes('"') || value.includes('\n')) {
       return `"${value.replace(/"/g, '""')}"`;
@@ -384,16 +462,168 @@ export async function exportQueryResultToPDF(
   logger: Logger
 ): Promise<void> {
   try {
-    // For PDF, we'll generate HTML and note that client-side PDF conversion is needed
-    // (or integrate a library like pdfdocument or puppeteer if available)
     const exporter = new QueryResultExporter(logger);
-    const htmlContent = exporter.exportAsHTML(result, options);
-    
-    // This is a placeholder - in production, use a PDF library
-    logger.info(`[VSContext] PDF export would contain: ${htmlContent.length} bytes of content`);
-    logger.info(`[VSContext] Use a PDF conversion tool or print to PDF from the HTML output`);
+    const lines = exporter.buildPdfLines(result, options);
+    const pdfBuffer = buildMinimalPdf(lines);
+
+    const targetDirectory = path.dirname(outputPath);
+    if (!fs.existsSync(targetDirectory)) {
+      fs.mkdirSync(targetDirectory, { recursive: true });
+    }
+
+    fs.writeFileSync(outputPath, pdfBuffer);
+    logger.info(`[VSContext] PDF export wrote ${outputPath} (${pdfBuffer.byteLength} bytes).`);
   } catch (error) {
     logger.error(`Failed to export PDF: ${error}`);
     throw error;
   }
+}
+
+function buildMinimalPdf(lines: string[]): Buffer {
+  const pageWidth = 612;
+  const pageHeight = 792;
+  const margin = 72;
+  const fontSize = 12;
+  const lineHeight = 14;
+  const maxCharsPerLine = 90;
+  const maxLinesPerPage = Math.max(1, Math.floor((pageHeight - margin * 2) / lineHeight));
+
+  const wrappedLines: string[] = [];
+  for (const line of lines) {
+    wrappedLines.push(...wrapPdfLine(line, maxCharsPerLine));
+  }
+
+  if (wrappedLines.length === 0) {
+    wrappedLines.push('');
+  }
+
+  const pages: string[][] = [];
+  for (let index = 0; index < wrappedLines.length; index += maxLinesPerPage) {
+    pages.push(wrappedLines.slice(index, index + maxLinesPerPage));
+  }
+
+  const objects: string[] = [];
+  objects.push('<< /Type /Catalog /Pages 2 0 R >>');
+
+  const pageReferences: string[] = [];
+  const firstPageObjectNumber = 4;
+  for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+    const pageObjectNumber = firstPageObjectNumber + (pageIndex * 2);
+    const contentObjectNumber = pageObjectNumber + 1;
+    pageReferences.push(`${pageObjectNumber} 0 R`);
+
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentObjectNumber} 0 R >>`);
+    const contentStream = buildPdfContentStream(pages[pageIndex], pageHeight, margin, fontSize, lineHeight);
+    objects.push(`<< /Length ${Buffer.byteLength(contentStream, 'latin1')} >>\nstream\n${contentStream}endstream`);
+  }
+
+  objects.splice(1, 0, `<< /Type /Pages /Kids [${pageReferences.join(' ')}] /Count ${pages.length} >>`);
+  objects.splice(2, 0, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+
+  const header = '%PDF-1.4\n%VSContext PDF export\n';
+  const chunks: string[] = [header];
+  const offsets: number[] = [0];
+  let currentOffset = Buffer.byteLength(header, 'latin1');
+
+  for (let index = 0; index < objects.length; index += 1) {
+    const objectNumber = index + 1;
+    const objectText = `${objectNumber} 0 obj\n${objects[index]}\nendobj\n`;
+    offsets.push(currentOffset);
+    chunks.push(objectText);
+    currentOffset += Buffer.byteLength(objectText, 'latin1');
+  }
+
+  const xrefOffset = currentOffset;
+  const xrefLines = ['xref', `0 ${objects.length + 1}`, '0000000000 65535 f '];
+  for (let index = 1; index < offsets.length; index += 1) {
+    xrefLines.push(`${String(offsets[index]).padStart(10, '0')} 00000 n `);
+  }
+
+  const trailer = [
+    'trailer',
+    `<< /Size ${objects.length + 1} /Root 1 0 R >>`,
+    'startxref',
+    String(xrefOffset),
+    '%%EOF',
+  ].join('\n');
+
+  chunks.push(`${xrefLines.join('\n')}\n${trailer}\n`);
+  return Buffer.from(chunks.join(''), 'latin1');
+}
+
+function buildPdfContentStream(lines: string[], pageHeight: number, margin: number, fontSize: number, lineHeight: number): string {
+  const startY = pageHeight - margin;
+  const commands: string[] = [
+    'BT',
+    `/F1 ${fontSize} Tf`,
+    `${margin} ${startY} Td`,
+    `${lineHeight} TL`,
+  ];
+
+  lines.forEach((line, index) => {
+    commands.push(`(${escapePdfText(line)}) Tj`);
+    if (index < lines.length - 1) {
+      commands.push('T*');
+    }
+  });
+
+  commands.push('ET');
+  return `${commands.join('\n')}\n`;
+}
+
+function wrapPdfLine(line: string, maxWidth: number): string[] {
+  const normalized = sanitizePdfText(line);
+  if (normalized.length <= maxWidth) {
+    return [normalized];
+  }
+
+  const words = normalized.split(/\s+/);
+  const wrapped: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    const parts = splitLongPdfToken(word, maxWidth);
+    for (const part of parts) {
+      if (current.length === 0) {
+        current = part;
+        continue;
+      }
+
+      if (current.length + 1 + part.length <= maxWidth) {
+        current = `${current} ${part}`;
+      } else {
+        wrapped.push(current);
+        current = part;
+      }
+    }
+  }
+
+  if (current.length > 0) {
+    wrapped.push(current);
+  }
+
+  return wrapped.length > 0 ? wrapped : [''];
+}
+
+function splitLongPdfToken(token: string, maxWidth: number): string[] {
+  if (token.length <= maxWidth) {
+    return [token];
+  }
+
+  const parts: string[] = [];
+  for (let index = 0; index < token.length; index += maxWidth) {
+    parts.push(token.slice(index, index + maxWidth));
+  }
+  return parts;
+}
+
+function sanitizePdfText(text: string): string {
+  return text.replace(/[^\x20-\x7E]/g, ' ');
+}
+
+function escapePdfText(text: string): string {
+  return sanitizePdfText(text)
+    .replace(/\\/g, '\\\\')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)');
 }

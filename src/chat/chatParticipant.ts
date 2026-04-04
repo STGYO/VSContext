@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 
 import { WorkspaceGraphBuilder } from '../graph/graphBuilder';
 import { Logger } from '../utils/logger';
+import { CrossLinkResolver } from '../utils/crossLinkResolver';
 import { getChatContextSettings } from './contextFilters';
 import { getQueryHelpMessage, orchestrateHybridQuery, type HybridQueryResult } from './queryOrchestrator';
 import { WorkspaceSemanticIndexer } from '../semantic/semanticIndexer';
@@ -45,6 +46,8 @@ export function registerVSContextChatParticipant(
         return;
       }
 
+      const crossLinkResolver = new CrossLinkResolver(graph, options.logger);
+
       const settings = getChatContextSettings();
       const queryResult = await orchestrateHybridQuery({
         request,
@@ -56,12 +59,14 @@ export function registerVSContextChatParticipant(
         getLastTreeSelectionNodeId: options.getLastTreeSelectionNodeId,
       });
 
+      const enhancedMarkdown = crossLinkResolver.enhanceMarkdownWithCrossLinks(queryResult.renderedMarkdown);
+
       if (!request.model) {
-        stream.markdown(queryResult.renderedMarkdown);
+        stream.markdown(enhancedMarkdown);
         return;
       }
 
-      await sendModelResponseWithRetry(request.model, queryResult, stream, token, options.logger);
+      await sendModelResponseWithRetry(request.model, queryResult, enhancedMarkdown, stream, token, options.logger);
     } catch (error) {
       options.logger.error('VSContext chat participant failed to process the request.', error);
       stream.markdown('VSContext could not complete this request. Open the VSContext output channel, wait for indexing to finish, and try again or run /help for command usage.');
@@ -82,6 +87,7 @@ function getHelpMessage(): string {
 async function sendModelResponseWithRetry(
   model: NonNullable<vscode.ChatRequest['model']>,
   queryResult: HybridQueryResult,
+  fallbackMarkdown: string,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   logger: Logger,
@@ -129,7 +135,7 @@ async function sendModelResponseWithRetry(
 
       logger.error('VSContext chat participant failed after retrying the model request.', error);
       stream.markdown('The selected model could not complete this request after two attempts. Here is the VSContext query packet that was prepared:');
-      stream.markdown(queryResult.renderedMarkdown);
+      stream.markdown(fallbackMarkdown);
       return;
     }
   }

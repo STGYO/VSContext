@@ -1,6 +1,6 @@
 # VSContext
 
-![Version](https://img.shields.io/badge/version-0.2.0-2563eb)
+![Version](https://img.shields.io/badge/version-0.2.1-2563eb)
 ![VS Code](https://img.shields.io/badge/vscode-%5E1.95.0-007acc)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 
@@ -20,6 +20,12 @@ It indexes supported source files, builds symbol relationships, and exposes thre
 ### Code Graph View
 
 ![VSContext Graph](assets/images/graph.png)
+
+## What Is New In 0.2.1
+
+- Added the saved searches and saved views tree back into the VSContext explorer.
+- Added cross-linked chat output so referenced symbols and files point back to source.
+- Added a real PDF export path for query results.
 
 ## What Is New In 0.2.0
 
@@ -297,7 +303,8 @@ webview/
   graph.html
   graph.css
   graph.js
-  sigmaRenderer.js
+  layoutMath.js
+  cytoscapeRenderer.js
 ```
 
 ## Development

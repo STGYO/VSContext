@@ -9,6 +9,8 @@ import { WorkspaceGraphBuilder } from './graph/graphBuilder';
 import { SymbolIndexer } from './graph/symbolIndexer';
 import { WorkspaceSemanticIndexer } from './semantic/semanticIndexer';
 import { ContextTreeProvider } from './tree/contextTreeProvider';
+import { SavedSearchCommandsManager, SavedSearchesTreeProvider } from './ui/savedSearchesTreeProvider';
+import { SavedSearchManager } from './ui/savedSearchManager';
 import { Logger } from './utils/logger';
 import { openGraphNodeInEditor, resolveSelectedSymbol } from './utils/symbolResolver';
 import {
@@ -217,6 +219,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const semanticIndexer = new WorkspaceSemanticIndexer(logger);
     const cacheFileUri = createGraphCacheUri(context);
     const graphBuilder = new WorkspaceGraphBuilder(symbolIndexer, logger, cacheFileUri);
+    const savedSearchManager = new SavedSearchManager(context, logger);
+    const savedSearchesTreeProvider = new SavedSearchesTreeProvider(savedSearchManager, logger);
+    new SavedSearchCommandsManager(context, savedSearchManager, savedSearchesTreeProvider, logger);
     let treeProvider: ContextTreeProvider;
     let initializationPromise: Promise<void> | undefined;
     let largeWorkspaceWarningShown = false;
@@ -316,9 +321,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       treeDataProvider: treeProvider,
       showCollapseAll: true,
     });
+    const savedSearchesTreeView = vscode.window.createTreeView('vscontext.savedSearches', {
+      treeDataProvider: savedSearchesTreeProvider,
+      showCollapseAll: true,
+    });
 
     context.subscriptions.push(treeProvider);
     context.subscriptions.push(treeView);
+    context.subscriptions.push(savedSearchesTreeProvider);
+    context.subscriptions.push(savedSearchesTreeView);
 
     let lastSelectedNodeId: string | undefined;
     context.subscriptions.push(

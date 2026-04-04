@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- Wired saved searches and saved views into the VSContext activity bar view.
+- Added cross-link enhancement for chat output so referenced symbols and files resolve back to source.
+- Replaced the PDF export placeholder with a real PDF file generator.
+- Bumped the extension version for the next marketplace release.
+
 ## 0.2.0
 
 - Added a local semantic indexing pipeline with chunked file records and symbol summaries

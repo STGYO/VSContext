@@ -1,3 +1,5 @@
+# Workspace Agents
+
 <!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->
 ## Agent Kanban
 

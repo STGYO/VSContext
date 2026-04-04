@@ -2,7 +2,7 @@
   "name": "vscontext",
   "displayName": "VSContext",
   "description": "A stable VS Code extension for workspace symbol graphing, execution tracing, and impact analysis.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "ShriSrimoyTrivedy",
   "icon": "icon.png",
   "license": "MIT",
@@ -301,16 +301,14 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "mocha --require ts-node/register 'test/**/*.test.ts' --timeout 5000",
-    "test:watch": "mocha --require ts-node/register 'test/**/*.test.ts' --watch --timeout 5000",
+    "test": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON ./node_modules/mocha/bin/mocha.js --require ts-node/register 'test/**/*.test.ts' --timeout 5000",
+    "test:watch": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON ./node_modules/mocha/bin/mocha.js --require ts-node/register 'test/**/*.test.ts' --watch --timeout 5000",
     "test:coverage": "nyc npm test"
   },
   "files": [
     "out",
     "webview",
     "node_modules/cytoscape/dist/cytoscape.min.js",
-    "node_modules/cytoscape-dagre/cytoscape-dagre.js",
-    "node_modules/dagre/dist/dagre.min.js",
     "package.json",
     "README.md",
     "CHANGELOG.md",
@@ -327,17 +325,14 @@
     "mocha": "^10.8.2",
     "nyc": "^15.1.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3",
-    "vscode": "^1.1.36"
+    "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.0.5"
   },
   "dependencies": {
     "better-sqlite3": "^12.8.0",
     "cytoscape": "^3.31.2",
-    "cytoscape-dagre": "^2.5.0",
-    "dagre": "^0.8.5",
-    "graphology": "^0.26.0",
-    "graphology-layout-forceatlas2": "^0.10.1",
-    "sigma": "^3.0.2",
     "tree-sitter": "0.21.1",
     "tree-sitter-c": "0.21.4",
     "tree-sitter-c-sharp": "0.23.1",

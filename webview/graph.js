@@ -1,14 +1,14 @@
-/* global acquireVsCodeApi SigmaRenderer */
+/* global acquireVsCodeApi CytoscapeRenderer VSContextGraphKeyboard */
 // webview/graph.js
 // Main controller for the VSContext graph webview.
-// Depends on sigmaRenderer.js (window.SigmaRenderer) loaded before this script.
+// Depends on cytoscapeRenderer.js (window.CytoscapeRenderer) loaded before this script.
 
 (function () {
   "use strict";
 
   const vscode = acquireVsCodeApi();
 
-  /** @type {SigmaRenderer|null} */
+  /** @type {CytoscapeRenderer|null} */
   let renderer = null;
 
   let loadState = {
@@ -55,14 +55,29 @@
   const tooltipEl = document.getElementById("node-tooltip");
   const collapseAllBtn = document.getElementById("collapse-all");
   const expandAllBtn = document.getElementById("expand-all");
+  const toggleEdgeDeclutterBtn = document.getElementById(
+    "toggle-edge-declutter",
+  );
+
+  const keyboardUtils =
+    typeof VSContextGraphKeyboard !== "undefined" ? VSContextGraphKeyboard : null;
+
+  const LAYOUT_MODES = [
+    { id: "hierarchical", label: "Mind Map" },
+    { id: "dependency", label: "Dependency Flow" },
+    { id: "radial", label: "Radial" },
+  ];
 
   // ─── View state ────────────────────────────────────────────────────────────
-  let viewMode = "hierarchical"; // 'hierarchical' | 'force'
+  let viewMode = "hierarchical";
   let dagDirection = "TB";
   const DIRECTIONS = ["TB", "LR", "BT", "RL"];
   let directionIndex = 0;
   let legendVisible = true;
   let topBarsVisible = true;
+  let smartLabelsEnabled = true;
+  let edgeDeclutterEnabled = false;
+  let focusedTooltipPreview = null;
 
   // Edge-type active set
   const activeEdgeTypes = new Set([
@@ -93,12 +108,14 @@
   // ─── Boot ──────────────────────────────────────────────────────────────────
 
   function init() {
-    if (typeof SigmaRenderer === "undefined") {
-      showNotice("Sigma renderer failed to load. Please reload the webview.");
+    if (typeof CytoscapeRenderer === "undefined") {
+      showNotice(
+        "Cytoscape renderer failed to load. Please reload the webview.",
+      );
       return;
     }
 
-    renderer = new SigmaRenderer(graphContainer);
+    renderer = new CytoscapeRenderer(graphContainer);
     renderer.initialize();
 
     renderer.setOpenNodeCallback((target) => {
@@ -109,6 +126,31 @@
     renderer.setCameraUpdateCallback(() => {
       scheduleZoomDisplayUpdate();
     });
+
+    renderer.setHoverNodeCallback((preview) => {
+      if (preview) {
+        showTooltip(preview, false);
+        return;
+      }
+
+      if (focusedTooltipPreview) {
+        showTooltip(focusedTooltipPreview, true);
+      } else {
+        hideTooltip();
+      }
+    });
+
+    renderer.setFocusNodeCallback((preview) => {
+      focusedTooltipPreview = preview || null;
+      if (focusedTooltipPreview) {
+        showTooltip(focusedTooltipPreview, true);
+      } else {
+        hideTooltip();
+      }
+    });
+
+    renderer.setSmartLabelsEnabled(smartLabelsEnabled);
+    renderer.setEdgeDeclutter(edgeDeclutterEnabled);
 
     setupEventListeners();
     updateZoomDisplay();
@@ -125,16 +167,17 @@
   // ─── Event listeners ───────────────────────────────────────────────────────
 
   function setupEventListeners() {
+    graphContainer?.addEventListener("pointerdown", () => {
+      graphContainer.focus();
+    });
+
     // ── Layout ────────────────────────────────────────────────────────────────
     viewToggleBtn?.addEventListener("click", () => {
-      viewMode = viewMode === "hierarchical" ? "force" : "hierarchical";
-      updateViewToggleBtn();
-      updateDirectionBtn();
-      renderer.setLayout(viewMode);
+      cycleViewMode();
     });
 
     directionToggleBtn?.addEventListener("click", () => {
-      if (viewMode !== "hierarchical") return;
+      if (!modeSupportsDirection(viewMode)) return;
       directionIndex = (directionIndex + 1) % DIRECTIONS.length;
       dagDirection = DIRECTIONS[directionIndex];
       updateDirectionBtn();
@@ -146,16 +189,19 @@
     });
 
     relayoutBtn?.addEventListener("click", () => {
-      renderer._applyLayout();
+      renderer.relayout();
+      maybeEmitLayoutDebugNotice();
     });
 
-    // Collapse/expand: not meaningful for Sigma (no compound nodes),
-    // but keep buttons wired to avoid broken UI
     collapseAllBtn?.addEventListener("click", () => {
-      showNotice("Structural grouping is not available in this graph view.");
+      renderer.collapseAll();
+      maybeEmitLayoutDebugNotice();
+      showNotice("Collapsed tree groups.");
     });
     expandAllBtn?.addEventListener("click", () => {
-      showNotice("Structural grouping is not available in this graph view.");
+      renderer.expandAll();
+      maybeEmitLayoutDebugNotice();
+      showNotice("Expanded tree groups.");
     });
 
     // ── Zoom ──────────────────────────────────────────────────────────────────
@@ -189,7 +235,7 @@
     toggleContainmentBtn?.addEventListener("click", () => {
       hideStructural = !hideStructural;
       toggleContainmentBtn.setAttribute("data-active", String(hideStructural));
-      toggleContainmentBtn.setAttribute("aria-checked", String(hideStructural));
+      toggleContainmentBtn.setAttribute("aria-pressed", String(hideStructural));
       toggleContainmentBtn.textContent = hideStructural
         ? "Show Structural Edges"
         : "Hide Structural Edges";
@@ -199,24 +245,37 @@
     toggleVariablesBtn?.addEventListener("click", () => {
       hideVariables = !hideVariables;
       toggleVariablesBtn.setAttribute("data-active", String(hideVariables));
-      toggleVariablesBtn.setAttribute("aria-checked", String(hideVariables));
+      toggleVariablesBtn.setAttribute("aria-pressed", String(hideVariables));
       toggleVariablesBtn.textContent = hideVariables
         ? "Show Variables"
         : "Hide Variables";
       renderer.setFilter("hideVariables", hideVariables);
     });
 
-    // Smart labels: Sigma doesn't have automatic label culling built in, but
-    // we track the toggle state for UI parity (no-op on renderer for now).
     toggleSmartLabelsBtn?.addEventListener("click", () => {
-      const current =
-        toggleSmartLabelsBtn.getAttribute("data-active") === "true";
-      const next = !current;
-      toggleSmartLabelsBtn.setAttribute("data-active", String(next));
-      toggleSmartLabelsBtn.setAttribute("aria-checked", String(next));
-      toggleSmartLabelsBtn.textContent = next
+      smartLabelsEnabled = !smartLabelsEnabled;
+      toggleSmartLabelsBtn.setAttribute("data-active", String(smartLabelsEnabled));
+      toggleSmartLabelsBtn.setAttribute("aria-pressed", String(smartLabelsEnabled));
+      toggleSmartLabelsBtn.textContent = smartLabelsEnabled
         ? "Smart Labels: On"
         : "Smart Labels: Off";
+      renderer.setSmartLabelsEnabled(smartLabelsEnabled);
+    });
+
+    toggleEdgeDeclutterBtn?.addEventListener("click", () => {
+      edgeDeclutterEnabled = !edgeDeclutterEnabled;
+      toggleEdgeDeclutterBtn.setAttribute(
+        "data-active",
+        String(edgeDeclutterEnabled),
+      );
+      toggleEdgeDeclutterBtn.setAttribute(
+        "aria-pressed",
+        String(edgeDeclutterEnabled),
+      );
+      toggleEdgeDeclutterBtn.textContent = edgeDeclutterEnabled
+        ? "Edge De-clutter: On"
+        : "Edge De-clutter: Off";
+      renderer.setEdgeDeclutter(edgeDeclutterEnabled);
     });
 
     // ── Edge type toggles ─────────────────────────────────────────────────────
@@ -227,13 +286,13 @@
         if (isActive) {
           activeEdgeTypes.delete(type);
           btn.setAttribute("data-active", "false");
-          btn.setAttribute("aria-checked", "false");
+          btn.setAttribute("aria-pressed", "false");
           btn.textContent = `${label}: Off`;
           renderer.toggleEdgeType(type, false);
         } else {
           activeEdgeTypes.add(type);
           btn.setAttribute("data-active", "true");
-          btn.setAttribute("aria-checked", "true");
+          btn.setAttribute("aria-pressed", "true");
           btn.textContent = `${label}: On`;
           renderer.toggleEdgeType(type, true);
         }
@@ -291,15 +350,35 @@
   // ─── Keyboard handler ──────────────────────────────────────────────────────
 
   function handleKeydown(e) {
-    // Don't intercept keys when user is typing in an input
-    if (
-      e.target &&
-      (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")
-    )
-      return;
-    // Don't intercept if a modifier key is held (allow browser shortcuts)
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (!renderer) return;
+
+    const targetElement = e.target instanceof Element ? e.target : null;
+    const activeElement =
+      document.activeElement instanceof Element ? document.activeElement : null;
+    const activeWithinGraph = Boolean(
+      graphContainer &&
+        activeElement &&
+        (activeElement === graphContainer ||
+          graphContainer.contains(activeElement)),
+    );
+
+    const shouldHandleShortcut = keyboardUtils
+      ? keyboardUtils.shouldHandleGraphShortcut({
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          altKey: e.altKey,
+          activeWithinGraph,
+          targetTagName: targetElement?.tagName,
+          targetRole: targetElement?.getAttribute("role") || "",
+          activeTagName: activeElement?.tagName,
+          activeRole: activeElement?.getAttribute("role") || "",
+          isContentEditable: Boolean(targetElement?.isContentEditable),
+        })
+      : activeWithinGraph && !e.ctrlKey && !e.metaKey && !e.altKey;
+
+    if (!shouldHandleShortcut) {
+      return;
+    }
 
     const key = e.key;
 
@@ -330,17 +409,14 @@
       case "v":
       case "V":
         e.preventDefault();
-        viewMode = viewMode === "hierarchical" ? "force" : "hierarchical";
-        updateViewToggleBtn();
-        updateDirectionBtn();
-        renderer.setLayout(viewMode);
+        cycleViewMode();
         break;
 
       // ── Cycle dag direction ───────────────────────────────────────────────────
       case "d":
       case "D":
         e.preventDefault();
-        if (viewMode === "hierarchical") {
+        if (modeSupportsDirection(viewMode)) {
           directionIndex = (directionIndex + 1) % DIRECTIONS.length;
           dagDirection = DIRECTIONS[directionIndex];
           updateDirectionBtn();
@@ -442,12 +518,16 @@
 
     loadState = sanitizeLoadState(msg.loadState);
     totals = sanitizeTotals(msg.totals, msg.payload);
+    focusedTooltipPreview = null;
 
     renderer.setData(msg.payload.nodes, msg.payload.edges);
 
-    updateSummary(msg.payload.nodes.length, msg.payload.edges.length);
+    const counts = renderer.getGraphCounts();
+
+    updateSummary(counts.nodeCount, counts.edgeCount);
     updateLoadMoreButton();
     scheduleZoomDisplayUpdate();
+    maybeEmitLayoutDebugNotice();
 
     if (loadState.wasTruncated) {
       showNotice(
@@ -469,13 +549,13 @@
     loadState = sanitizeLoadState(msg.loadState);
     totals = sanitizeTotals(msg.totals, msg.payload);
 
-    renderer.appendData(msg.payload.nodes, msg.payload.edges);
+    renderer.appendData(msg.payload.nodes, msg.payload.edges, msg.layoutHint);
 
-    const totalVisible = renderer.graph ? renderer.graph.order : 0;
-    const totalEdges = renderer.graph ? renderer.graph.size : 0;
-    updateSummary(totalVisible, totalEdges);
+    const counts = renderer.getGraphCounts();
+    updateSummary(counts.nodeCount, counts.edgeCount);
     updateLoadMoreButton();
     scheduleZoomDisplayUpdate();
+    maybeEmitLayoutDebugNotice();
 
     const appendedCount = Number.isFinite(msg.appendedNodeCount)
       ? msg.appendedNodeCount
@@ -522,7 +602,58 @@
   }
 
   function hideTooltip() {
-    if (tooltipEl) tooltipEl.hidden = true;
+    if (!tooltipEl) return;
+    tooltipEl.hidden = true;
+    tooltipEl.textContent = "";
+  }
+
+  function showTooltip(preview, fromFocus) {
+    if (!tooltipEl || !graphContainer || !preview) {
+      return;
+    }
+
+    const type = String(preview.type || "symbol");
+    const branchKind = preview.branchKind ? ` • ${preview.branchKind}` : "";
+    const line = Number.isFinite(preview.line) ? preview.line : 1;
+    const hint = fromFocus
+      ? "Press Enter to open in editor."
+      : "Ctrl/Cmd+Click to open in editor.";
+
+    tooltipEl.innerHTML =
+      `<strong>${escapeHtml(preview.label || "(unknown)")}</strong>` +
+      `<div class="tooltip-meta">${escapeHtml(type)}${escapeHtml(branchKind)}</div>` +
+      `<div class="tooltip-meta">${escapeHtml(preview.filePath || "")}:` +
+      `${line}</div>` +
+      `<div class="tooltip-hint">${escapeHtml(hint)}</div>`;
+
+    tooltipEl.hidden = false;
+
+    const rect = graphContainer.getBoundingClientRect();
+    const renderedX = Number.isFinite(preview.renderedX)
+      ? preview.renderedX
+      : rect.width / 2;
+    const renderedY = Number.isFinite(preview.renderedY)
+      ? preview.renderedY
+      : rect.height / 2;
+
+    const targetX = rect.left + renderedX + 14;
+    const targetY = rect.top + renderedY + 14;
+    const width = tooltipEl.offsetWidth || 260;
+    const height = tooltipEl.offsetHeight || 120;
+    const x = Math.max(8, Math.min(targetX, window.innerWidth - width - 8));
+    const y = Math.max(8, Math.min(targetY, window.innerHeight - height - 8));
+
+    tooltipEl.style.left = `${x}px`;
+    tooltipEl.style.top = `${y}px`;
+  }
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   }
 
   function updateLoadMoreButton() {
@@ -549,28 +680,67 @@
     zoomLevelEl.textContent = renderer.getZoomLevel() + "%";
   }
 
+  function maybeEmitLayoutDebugNotice() {
+    if (!window.__VSCONTEXT_DEBUG_LAYOUT__ || !renderer) {
+      return;
+    }
+
+    if (typeof renderer.getLastLayoutDiagnostics !== "function") {
+      return;
+    }
+
+    const diagnostics = renderer.getLastLayoutDiagnostics();
+    if (!diagnostics || diagnostics.overlapAdjustments <= 0) {
+      return;
+    }
+
+    showNotice(
+      `Layout overlap guard: ${diagnostics.overlapAdjustments} adjustments across ${diagnostics.treeCount} trees.`,
+    );
+  }
+
   // ── Filter state ──────────────────────────────────────────────────────────
 
   function syncFilterButtonStates() {
     if (toggleContainmentBtn) {
       toggleContainmentBtn.setAttribute("data-active", String(hideStructural));
-      toggleContainmentBtn.setAttribute("aria-checked", String(hideStructural));
+      toggleContainmentBtn.setAttribute("aria-pressed", String(hideStructural));
       toggleContainmentBtn.textContent = hideStructural
         ? "Show Structural Edges"
         : "Hide Structural Edges";
     }
     if (toggleVariablesBtn) {
       toggleVariablesBtn.setAttribute("data-active", String(hideVariables));
-      toggleVariablesBtn.setAttribute("aria-checked", String(hideVariables));
+      toggleVariablesBtn.setAttribute("aria-pressed", String(hideVariables));
       toggleVariablesBtn.textContent = hideVariables
         ? "Show Variables"
         : "Hide Variables";
+    }
+    if (toggleSmartLabelsBtn) {
+      toggleSmartLabelsBtn.setAttribute("data-active", String(smartLabelsEnabled));
+      toggleSmartLabelsBtn.setAttribute("aria-pressed", String(smartLabelsEnabled));
+      toggleSmartLabelsBtn.textContent = smartLabelsEnabled
+        ? "Smart Labels: On"
+        : "Smart Labels: Off";
+    }
+    if (toggleEdgeDeclutterBtn) {
+      toggleEdgeDeclutterBtn.setAttribute(
+        "data-active",
+        String(edgeDeclutterEnabled),
+      );
+      toggleEdgeDeclutterBtn.setAttribute(
+        "aria-pressed",
+        String(edgeDeclutterEnabled),
+      );
+      toggleEdgeDeclutterBtn.textContent = edgeDeclutterEnabled
+        ? "Edge De-clutter: On"
+        : "Edge De-clutter: Off";
     }
     for (const { btn, type, label } of EDGE_TYPE_BTNS) {
       if (!btn) continue;
       const on = activeEdgeTypes.has(type);
       btn.setAttribute("data-active", String(on));
-      btn.setAttribute("aria-checked", String(on));
+      btn.setAttribute("aria-pressed", String(on));
       btn.textContent = `${label}: ${on ? "On" : "Off"}`;
     }
   }
@@ -578,6 +748,8 @@
   function resetFilters() {
     hideStructural = false;
     hideVariables = false;
+    smartLabelsEnabled = true;
+    edgeDeclutterEnabled = false;
     activeEdgeTypes.clear();
     ["calls", "implements", "reads", "writes", "file-dependency"].forEach((t) =>
       activeEdgeTypes.add(t),
@@ -586,6 +758,8 @@
     if (renderer) {
       renderer.setFilter("hideStructural", false);
       renderer.setFilter("hideVariables", false);
+      renderer.setSmartLabelsEnabled(true);
+      renderer.setEdgeDeclutter(false);
       for (const { type } of EDGE_TYPE_BTNS) {
         renderer.toggleEdgeType(type, true);
       }
@@ -597,17 +771,30 @@
 
   // ── Layout button labels ───────────────────────────────────────────────────
 
+  function cycleViewMode() {
+    const currentIndex = LAYOUT_MODES.findIndex((mode) => mode.id === viewMode);
+    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % LAYOUT_MODES.length;
+    viewMode = LAYOUT_MODES[nextIndex].id;
+    updateViewToggleBtn();
+    updateDirectionBtn();
+    renderer.setLayout(viewMode);
+  }
+
+  function modeSupportsDirection(mode) {
+    return mode === "hierarchical" || mode === "dependency";
+  }
+
   function updateViewToggleBtn() {
     if (!viewToggleBtn) return;
-    viewToggleBtn.textContent =
-      viewMode === "hierarchical" ? "View: Mind Map" : "View: Force";
+    const activeMode = LAYOUT_MODES.find((mode) => mode.id === viewMode);
+    viewToggleBtn.textContent = `View: ${activeMode?.label || "Mind Map"}`;
   }
 
   function updateDirectionBtn() {
     if (!directionToggleBtn) return;
-    if (viewMode !== "hierarchical") {
+    if (!modeSupportsDirection(viewMode)) {
       directionToggleBtn.disabled = true;
-      directionToggleBtn.textContent = `Direction: ${dagDirection}`;
+      directionToggleBtn.textContent = "Direction: N/A";
     } else {
       directionToggleBtn.disabled = false;
       directionToggleBtn.textContent = `Direction: ${dagDirection}`;

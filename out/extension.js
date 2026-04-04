@@ -45,6 +45,8 @@ const graphBuilder_1 = require("./graph/graphBuilder");
 const symbolIndexer_1 = require("./graph/symbolIndexer");
 const semanticIndexer_1 = require("./semantic/semanticIndexer");
 const contextTreeProvider_1 = require("./tree/contextTreeProvider");
+const savedSearchesTreeProvider_1 = require("./ui/savedSearchesTreeProvider");
+const savedSearchManager_1 = require("./ui/savedSearchManager");
 const logger_1 = require("./utils/logger");
 const symbolResolver_1 = require("./utils/symbolResolver");
 const workspaceScanner_1 = require("./utils/workspaceScanner");
@@ -215,6 +217,9 @@ async function activate(context) {
         const semanticIndexer = new semanticIndexer_1.WorkspaceSemanticIndexer(logger);
         const cacheFileUri = createGraphCacheUri(context);
         const graphBuilder = new graphBuilder_1.WorkspaceGraphBuilder(symbolIndexer, logger, cacheFileUri);
+        const savedSearchManager = new savedSearchManager_1.SavedSearchManager(context, logger);
+        const savedSearchesTreeProvider = new savedSearchesTreeProvider_1.SavedSearchesTreeProvider(savedSearchManager, logger);
+        new savedSearchesTreeProvider_1.SavedSearchCommandsManager(context, savedSearchManager, savedSearchesTreeProvider, logger);
         let treeProvider;
         let initializationPromise;
         let largeWorkspaceWarningShown = false;
@@ -292,8 +297,14 @@ async function activate(context) {
             treeDataProvider: treeProvider,
             showCollapseAll: true,
         });
+        const savedSearchesTreeView = vscode.window.createTreeView('vscontext.savedSearches', {
+            treeDataProvider: savedSearchesTreeProvider,
+            showCollapseAll: true,
+        });
         context.subscriptions.push(treeProvider);
         context.subscriptions.push(treeView);
+        context.subscriptions.push(savedSearchesTreeProvider);
+        context.subscriptions.push(savedSearchesTreeView);
         let lastSelectedNodeId;
         context.subscriptions.push(treeView.onDidChangeSelection((event) => {
             const selected = event.selection[0];
