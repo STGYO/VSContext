@@ -29,7 +29,7 @@ import {
   type KnowledgeRelationshipKind,
 } from "./knowledgeModel";
 import { CacheVersionManager } from "../indexing/indexTelemetry";
-import { GraphDatabase } from "./graphDatabase";
+import type { GraphDatabase } from "./graphDatabase";
 
 export type GraphNodeType = Extract<
   KnowledgeNodeKind,
@@ -175,14 +175,15 @@ export class WorkspaceGraphBuilder {
   public initializeDatabase(dbUri: vscode.Uri): void {
     this.dbUri = dbUri;
     try {
+      const { GraphDatabase: GraphDatabaseImpl } = require("./graphDatabase") as typeof import("./graphDatabase");
       const dir = path.dirname(dbUri.fsPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      this.db = GraphDatabase.open(dbUri.fsPath);
+      this.db = GraphDatabaseImpl.open(dbUri.fsPath);
     } catch (error) {
       this.logger.warn(
-        `[VSContext] Failed to open graph database: ${error}. Will use in-memory only.`,
+        `[VSContext] Graph database is unavailable; continuing without SQLite persistence. ${error}`,
       );
       this.db = undefined;
     }

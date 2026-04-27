@@ -42,7 +42,6 @@ const fileRoleClassifier_1 = require("../utils/fileRoleClassifier");
 const workspaceScanner_1 = require("../utils/workspaceScanner");
 const knowledgeModel_1 = require("./knowledgeModel");
 const indexTelemetry_1 = require("../indexing/indexTelemetry");
-const graphDatabase_1 = require("./graphDatabase");
 const GRAPH_CACHE_VERSION = indexTelemetry_1.CacheVersionManager.GRAPH_CACHE_VERSION;
 const PERSIST_DEBOUNCE_MS = 800;
 class WorkspaceGraphBuilder {
@@ -83,14 +82,15 @@ class WorkspaceGraphBuilder {
     initializeDatabase(dbUri) {
         this.dbUri = dbUri;
         try {
+            const { GraphDatabase: GraphDatabaseImpl } = require("./graphDatabase");
             const dir = path.dirname(dbUri.fsPath);
             if (!fs.existsSync(dir)) {
                 fs.mkdirSync(dir, { recursive: true });
             }
-            this.db = graphDatabase_1.GraphDatabase.open(dbUri.fsPath);
+            this.db = GraphDatabaseImpl.open(dbUri.fsPath);
         }
         catch (error) {
-            this.logger.warn(`[VSContext] Failed to open graph database: ${error}. Will use in-memory only.`);
+            this.logger.warn(`[VSContext] Graph database is unavailable; continuing without SQLite persistence. ${error}`);
             this.db = undefined;
         }
     }

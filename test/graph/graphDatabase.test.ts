@@ -2,6 +2,7 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import Module from "module";
 import { afterEach, beforeEach, describe, it } from "mocha";
 
 import {
@@ -57,6 +58,29 @@ function cleanupDb(dbPath: string): void {
 // ---------------------------------------------------------------------------
 
 describe("GraphDatabase", () => {
+  it("can be loaded without better-sqlite3 during module import", () => {
+    const moduleLoader = Module as any;
+    const originalLoad = moduleLoader._load;
+    const modulePath = require.resolve("../../src/graph/graphDatabase");
+
+    delete require.cache[modulePath];
+    moduleLoader._load = function(request: string, parent: unknown, isMain: boolean) {
+      if (request === "better-sqlite3") {
+        throw new Error("better-sqlite3 unavailable during module import");
+      }
+
+      return originalLoad.apply(this, [request, parent, isMain]);
+    };
+
+    try {
+      const loaded = require("../../src/graph/graphDatabase") as typeof import("../../src/graph/graphDatabase");
+      assert.ok(loaded.GraphDatabase);
+    } finally {
+      moduleLoader._load = originalLoad;
+      delete require.cache[modulePath];
+    }
+  });
+
   let dbPath: string;
   let db: GraphDatabase;
 

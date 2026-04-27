@@ -5,7 +5,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <meta
             http-equiv="Content-Security-Policy"
-            content="default-src 'none'; img-src {{cspSource}} data: blob:; style-src {{cspSource}} 'nonce-{{nonce}}'; script-src 'nonce-{{nonce}}';"
+            content="default-src 'none'; connect-src {{cspSource}} blob:; img-src {{cspSource}} data: blob:; style-src {{cspSource}} 'nonce-{{nonce}}'; script-src 'nonce-{{nonce}}'; worker-src {{cspSource}} blob:;"
         />
         <title>VSContext Code Graph</title>
         <link nonce="{{nonce}}" rel="stylesheet" href="{{styleUri}}" />
@@ -291,6 +291,10 @@
         </div>
 
         <script nonce="{{nonce}}" src="{{cytoscapeUri}}"></script>
+        <script nonce="{{nonce}}">
+            window.VSContextElkWorkerUri = {{elkWorkerUri}};
+        </script>
+        <script nonce="{{nonce}}" src="{{elkUri}}"></script>
         <script nonce="{{nonce}}" src="{{layoutMathUri}}"></script>
         <script nonce="{{nonce}}" src="{{cytoscapeRendererUri}}"></script>
         <script nonce="{{nonce}}" src="{{graphKeyboardUri}}"></script>

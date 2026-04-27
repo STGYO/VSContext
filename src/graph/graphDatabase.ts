@@ -1,4 +1,3 @@
-import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -170,6 +169,24 @@ interface RawCountRow {
   count: number;
 }
 
+interface BetterSqliteStatement<TResult = unknown> {
+  run(...params: unknown[]): { changes: number };
+  all(): TResult[];
+  get(...params: unknown[]): TResult | undefined;
+}
+
+interface BetterSqliteDatabase {
+  close(): void;
+  exec(sql: string): void;
+  pragma(statement: string): void;
+  prepare<TResult = unknown>(sql: string): BetterSqliteStatement<TResult>;
+  transaction<T extends (...args: unknown[]) => unknown>(callback: T): T;
+}
+
+interface BetterSqliteModule {
+  new (dbPath: string): BetterSqliteDatabase;
+}
+
 // ---------------------------------------------------------------------------
 // GraphDatabase
 // ---------------------------------------------------------------------------
@@ -180,9 +197,9 @@ interface RawCountRow {
  * supplies a callback wrapped in `transaction()`.
  */
 export class GraphDatabase {
-  private readonly db: Database.Database;
+  private readonly db: BetterSqliteDatabase;
 
-  private constructor(db: Database.Database) {
+  private constructor(db: BetterSqliteDatabase) {
     this.db = db;
   }
 
@@ -195,6 +212,8 @@ export class GraphDatabase {
    * `GraphDatabase` instance.
    */
   static open(dbPath: string): GraphDatabase {
+    const Database = require('better-sqlite3') as BetterSqliteModule;
+
     // Ensure the parent directory exists so Database() doesn't throw.
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) {

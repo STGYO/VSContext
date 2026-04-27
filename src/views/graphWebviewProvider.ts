@@ -91,6 +91,7 @@ export async function openGraphWebviewPanel(
           "cytoscape",
           "dist",
         ),
+        joinExtensionPath(context.extensionUri, "node_modules", "elkjs", "lib"),
       ],
     },
   );
@@ -358,6 +359,12 @@ async function renderGraphHtml(
       "cytoscape.min.js",
     ),
   );
+  const elkUri = webview.asWebviewUri(
+    joinExtensionPath(extensionUri, "node_modules", "elkjs", "lib", "elk.bundled.js"),
+  );
+  const elkWorkerUri = webview.asWebviewUri(
+    joinExtensionPath(extensionUri, "node_modules", "elkjs", "lib", "elk-worker.min.js"),
+  );
   const cytoscapeRendererUri = webview.asWebviewUri(
     joinExtensionPath(extensionUri, "webview", "cytoscapeRenderer.js"),
   );
@@ -381,6 +388,8 @@ async function renderGraphHtml(
     .replaceAll("{{scriptUri}}", scriptUri.toString())
     .replaceAll("{{graphKeyboardUri}}", graphKeyboardUri.toString())
     .replaceAll("{{cytoscapeUri}}", cytoscapeUri.toString())
+    .replaceAll("{{elkUri}}", elkUri.toString())
+    .replaceAll("{{elkWorkerUri}}", JSON.stringify(elkWorkerUri.toString()))
     .replaceAll("{{layoutMathUri}}", layoutMathUri.toString())
     .replaceAll("{{cytoscapeRendererUri}}", cytoscapeRendererUri.toString())
     .replaceAll("{{htmlDir}}", path.dirname(htmlUri.fsPath));
@@ -392,7 +401,7 @@ function fallbackTemplate(): string {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {{cspSource}} data: blob:; style-src {{cspSource}} 'nonce-{{nonce}}'; script-src 'nonce-{{nonce}}';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src {{cspSource}} blob:; img-src {{cspSource}} data: blob:; style-src {{cspSource}} 'nonce-{{nonce}}'; script-src 'nonce-{{nonce}}'; worker-src {{cspSource}} blob:;" />
   <title>VSContext Code Graph</title>
   <link nonce="{{nonce}}" rel="stylesheet" href="{{styleUri}}" />
 </head>
@@ -493,6 +502,10 @@ function fallbackTemplate(): string {
     </section>
   </div>
   <script nonce="{{nonce}}" src="{{cytoscapeUri}}"></script>
+  <script nonce="{{nonce}}">
+    window.VSContextElkWorkerUri = {{elkWorkerUri}};
+  </script>
+  <script nonce="{{nonce}}" src="{{elkUri}}"></script>
   <script nonce="{{nonce}}" src="{{layoutMathUri}}"></script>
   <script nonce="{{nonce}}" src="{{cytoscapeRendererUri}}"></script>
   <script nonce="{{nonce}}" src="{{graphKeyboardUri}}"></script>

@@ -256,6 +256,9 @@
       this.pendingFit = false;
       this.pendingCameraState = null;
       this.forceNextLayout = false;
+      this.layoutInFlight = false;
+      this.layoutRerunRequested = false;
+      this.layoutRequestId = 0;
       this.lastLayoutSignature = "";
       this.needsInitialFit = true;
       this.layoutDiagnostics = {
@@ -265,6 +268,36 @@
         treeCount: 0,
         lastReason: "",
       };
+
+      this.elkWorkerUri =
+        typeof window !== "undefined" && window.VSContextElkWorkerUri
+          ? String(window.VSContextElkWorkerUri)
+          : "";
+      this.elk = null;
+      this.elkInitPromise = this._initializeElk();
+    }
+
+    async _initializeElk() {
+      if (typeof ELK === "undefined" || !this.elkWorkerUri) {
+        return null;
+      }
+
+      try {
+        const response = await fetch(this.elkWorkerUri);
+        if (!response.ok) {
+          throw new Error(`ELK worker fetch failed with ${response.status}`);
+        }
+
+        const workerSource = await response.text();
+        const workerBlob = new Blob([workerSource], {
+          type: "text/javascript",
+        });
+        const workerUrl = URL.createObjectURL(workerBlob);
+        return new ELK({ workerUrl });
+      } catch (error) {
+        console.warn("[VSContext] Failed to initialize ELK layout.", error);
+        return null;
+      }
     }
 
     initialize() {
@@ -545,9 +578,10 @@
       }
 
       this.forceNextLayout = true;
-      this._applyLayout();
-      this.lastLayoutSignature = this._computeLayoutSignature();
-      this.fitView();
+      this._queueLayout("relayout", {
+        fit: true,
+        preserveCamera: false,
+      });
     }
 
     setLayout(type) {
@@ -1018,6 +1052,7 @@
         return;
       }
 
+      this.layoutRequestId += 1;
       this.layoutDiagnostics.lastReason = reason;
       this.pendingFit = this.pendingFit || Boolean(options?.fit);
       this.forceNextLayout = this.forceNextLayout || Boolean(options?.force);
@@ -1026,49 +1061,80 @@
         this.pendingCameraState = options.cameraState;
       }
 
+      if (this.layoutInFlight) {
+        this.layoutRerunRequested = true;
+        return;
+      }
+
       if (this.layoutFrameId !== null) {
         return;
       }
 
       this.layoutFrameId = requestAnimationFrame(() => {
         this.layoutFrameId = null;
-        this._flushQueuedLayout();
+        void this._flushQueuedLayout();
       });
     }
 
-    _flushQueuedLayout() {
+    async _flushQueuedLayout() {
       if (!this.cy) {
         return;
       }
 
+      if (this.layoutInFlight) {
+        this.layoutRerunRequested = true;
+        return;
+      }
+
+      this.layoutInFlight = true;
+      const requestId = this.layoutRequestId;
       const nextSignature = this._computeLayoutSignature();
       const shouldApplyLayout =
         this.forceNextLayout || nextSignature !== this.lastLayoutSignature;
 
-      if (shouldApplyLayout) {
-        this._applyLayout();
-        this.lastLayoutSignature = this._computeLayoutSignature();
-      }
+      try {
+        if (shouldApplyLayout) {
+          await this._applyLayout(requestId);
+          if (requestId !== this.layoutRequestId) {
+            return;
+          }
 
-      if (this.pendingCameraState) {
-        this._restoreCameraState(this.pendingCameraState);
-        this.pendingCameraState = null;
-      } else if (this.pendingFit || this.needsInitialFit) {
-        this.fitView();
-        this.needsInitialFit = false;
-      }
+          this.lastLayoutSignature = this._computeLayoutSignature();
+        }
 
-      this.pendingFit = false;
-      this.forceNextLayout = false;
-      this._applyEdgeDeclutter();
-      this._applySmartLabels();
-      this._emitFocusPreview();
-      this.incrementalLayoutPending = false;
-      this.appendedNodeIds.clear();
-      this.previousVisiblePositions.clear();
+        if (requestId !== this.layoutRequestId) {
+          return;
+        }
 
-      if (typeof this.onCameraUpdate === "function") {
-        this.onCameraUpdate(this.getZoomLevel());
+        if (this.pendingCameraState) {
+          this._restoreCameraState(this.pendingCameraState);
+          this.pendingCameraState = null;
+        } else if (this.pendingFit || this.needsInitialFit) {
+          this.fitView();
+          this.needsInitialFit = false;
+        }
+
+        this.pendingFit = false;
+        this.forceNextLayout = false;
+        this._applyEdgeDeclutter();
+        this._applySmartLabels();
+        this._emitFocusPreview();
+        this.incrementalLayoutPending = false;
+        this.appendedNodeIds.clear();
+        this.previousVisiblePositions.clear();
+
+        if (typeof this.onCameraUpdate === "function") {
+          this.onCameraUpdate(this.getZoomLevel());
+        }
+      } finally {
+        this.layoutInFlight = false;
+        if (this.layoutRerunRequested) {
+          this.layoutRerunRequested = false;
+          this._queueLayout("layoutRerun", {
+            preserveCamera: true,
+            cameraState: this._captureCameraState(),
+          });
+        }
       }
     }
 
@@ -1094,12 +1160,17 @@
       });
     }
 
-    _applyLayout() {
+    async _applyLayout(requestId) {
       if (!this.cy) {
         return;
       }
 
       if (this.layoutMode === "dependency") {
+        const usedElk = await this._applyElkLayout("dependency", requestId);
+        if (usedElk) {
+          return;
+        }
+
         this._applyDependencyLayout();
         return;
       }
@@ -1109,7 +1180,219 @@
         return;
       }
 
+      const usedElk = await this._applyElkLayout("hierarchical", requestId);
+      if (usedElk) {
+        return;
+      }
+
       this._applyTreeLayout();
+    }
+
+    _canUseElkLayout() {
+      return Boolean(this.elk && typeof this.elk.layout === "function");
+    }
+
+    async _applyElkLayout(mode, requestId) {
+      if (!this.cy) {
+        return false;
+      }
+
+      if (!this._canUseElkLayout()) {
+        this.elk = await this.elkInitPromise;
+      }
+
+      if (!this._canUseElkLayout()) {
+        return false;
+      }
+
+      const visibleNodes = this.cy.nodes(":visible").toArray();
+      const visibleEdges = this.cy.edges(":visible").toArray();
+      if (visibleNodes.length === 0) {
+        return false;
+      }
+
+      const elkGraph = this._buildElkGraph(visibleNodes, visibleEdges, mode);
+      const layoutOptions = this._elkLayoutOptions(mode);
+      elkGraph.layoutOptions = layoutOptions;
+
+      try {
+        const laidOutGraph = await this.elk.layout(elkGraph, {
+          layoutOptions,
+        });
+
+        if (!this.cy || requestId !== this.layoutRequestId) {
+          return false;
+        }
+
+        this.layoutDiagnostics = {
+          overlapAdjustments: 0,
+          collisionPasses: 0,
+          totalWidth: 0,
+          treeCount: this.cy.nodes('node[type = "file"]:visible').length,
+          lastReason: this.layoutDiagnostics.lastReason,
+        };
+
+        this._applyElkGraphPositions(laidOutGraph, 0, 0);
+        return true;
+      } catch (error) {
+        console.warn("[VSContext] ELK layout failed; falling back.", error);
+        return false;
+      }
+    }
+
+    _buildElkGraph(visibleNodes, visibleEdges, mode) {
+      const elkLookup = new Map();
+      const elkNodes = visibleNodes
+        .slice()
+        .sort((left, right) => {
+          const depthDiff = this._nodeDepth(left.id()) - this._nodeDepth(right.id());
+          if (depthDiff !== 0) {
+            return depthDiff;
+          }
+
+          return String(left.data("label") || "").localeCompare(
+            String(right.data("label") || ""),
+          );
+        })
+        .map((node) => {
+          const dimensions = this._elkNodeDimensions(node, mode);
+          const elkNode = {
+            id: node.id(),
+            width: dimensions.width,
+            height: dimensions.height,
+          };
+
+          elkLookup.set(node.id(), elkNode);
+          return elkNode;
+        });
+
+      const elkEdges = visibleEdges
+        .slice()
+        .sort((left, right) => {
+          return String(left.data("relationship") || "").localeCompare(
+            String(right.data("relationship") || ""),
+          );
+        })
+        .map((edge) => ({
+          id: edge.id(),
+          sources: [String(edge.data("source") || "")],
+          targets: [String(edge.data("target") || "")],
+        }));
+
+      const graph = {
+        id: "root",
+        children: [],
+        edges: elkEdges,
+      };
+
+      for (const node of elkNodes) {
+        const cyNode = this.cy.getElementById(node.id);
+        const parent = cyNode.parent();
+        if (parent && !parent.empty() && elkLookup.has(parent.id())) {
+          const parentNode = elkLookup.get(parent.id());
+          parentNode.children = parentNode.children || [];
+          parentNode.children.push(node);
+        } else {
+          graph.children.push(node);
+        }
+      }
+
+      return graph;
+    }
+
+    _elkNodeDimensions(node, mode) {
+      const type = String(node.data("type") || "");
+      const label = String(node.data("label") || node.data("id") || "");
+      const size = Number(node.data("size") || 0);
+      const widthFloor =
+        type === "file"
+          ? 240
+          : type === "branch"
+            ? 180
+            : type === "class"
+              ? 132
+              : type === "function" || type === "method"
+                ? 110
+                : 92;
+      const heightFloor =
+        type === "file"
+          ? 76
+          : type === "branch"
+            ? 58
+            : type === "class"
+              ? 44
+              : type === "function" || type === "method"
+                ? 34
+                : 28;
+      const width = Math.max(
+        widthFloor,
+        estimateNodeWidth({ label, size }, widthFloor),
+      );
+      const height = Math.max(heightFloor, Math.round(size + 8));
+
+      if (mode === "dependency" && type === "file") {
+        return {
+          width: Math.max(width, 260),
+          height: Math.max(height, 84),
+        };
+      }
+
+      return { width, height };
+    }
+
+    _elkLayoutOptions(mode) {
+      const direction = this._elkDirection();
+      const dependencyMode = mode === "dependency";
+
+      return {
+        "elk.algorithm": "layered",
+        "elk.direction": direction,
+        "elk.edgeRouting": dependencyMode ? "ORTHOGONAL" : "POLYLINE",
+        "elk.layered.mergeEdges": "true",
+        "elk.spacing.nodeNode": dependencyMode ? "42" : "30",
+        "elk.spacing.edgeNodeBetweenLayers": dependencyMode ? "44" : "30",
+        "elk.layered.spacing.nodeNodeBetweenLayers": dependencyMode ? "72" : "56",
+        "elk.layered.spacing.edgeNodeBetweenLayers": dependencyMode ? "42" : "28",
+      };
+    }
+
+    _elkDirection() {
+      switch (this.dagDirection) {
+        case "BT":
+          return "UP";
+        case "LR":
+          return "RIGHT";
+        case "RL":
+          return "LEFT";
+        case "TB":
+        default:
+          return "DOWN";
+      }
+    }
+
+    _applyElkGraphPositions(elkNode, offsetX, offsetY) {
+      if (!elkNode) {
+        return;
+      }
+
+      const childOffsetX = offsetX + Number(elkNode.x || 0);
+      const childOffsetY = offsetY + Number(elkNode.y || 0);
+
+      if (typeof elkNode.id === "string") {
+        const cyNode = this.cy.getElementById(elkNode.id);
+        if (cyNode && !cyNode.empty()) {
+          const width = Number(elkNode.width || cyNode.width() || 0);
+          const height = Number(elkNode.height || cyNode.height() || 0);
+          cyNode.position({
+            x: childOffsetX + width / 2,
+            y: childOffsetY + height / 2,
+          });
+        }
+      }
+
+      for (const child of elkNode.children || []) {
+        this._applyElkGraphPositions(child, childOffsetX, childOffsetY);
+      }
     }
 
     _applyDependencyLayout() {
